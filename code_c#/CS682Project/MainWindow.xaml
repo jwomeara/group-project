@@ -1,0 +1,18 @@
+﻿<Window
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:k="http://schemas.microsoft.com/kinect/2013"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="d" x:Class="CS682Project.MainWindow"
+        Title="MainWindow"  Background="#FF090101" WindowStartupLocation="CenterScreen" WindowState="Maximized" HorizontalAlignment="Left" VerticalAlignment="Top" Grid.IsSharedSizeScope="True" SnapsToDevicePixels="True">
+    <Grid x:Name="myCanvas" Width="Auto" Height="Auto">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="640*"/>
+            <ColumnDefinition Width="150*"/>
+            <ColumnDefinition Width="640*"/>
+        </Grid.ColumnDefinitions>
+        <k:KinectSensorChooserUI Name="sensorChooserUI" Grid.Column="1" Height="100" Width="150" HorizontalAlignment="Center" VerticalAlignment="Top"/>
+        <Image x:Name="kinectColorImage" Grid.Column="0" Height="480" Width="640" VerticalAlignment="Top" Margin="0,100,0,0"/>
+        <Image x:Name="kinectDepthImage" Grid.Column="2" Height="480" Width="640" VerticalAlignment="Top" Margin="0,100,0,0"/>
+
+    </Grid>
+</Window>
