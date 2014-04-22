@@ -60,7 +60,7 @@ namespace CS682Project
         Line[] myBones;
         DepthImagePoint[] myJoints = new DepthImagePoint[2];
 
-        Image<Bgr, Byte> CVKinectDepthFrame;
+        Image<Bgr, Single> CVKinectDepthFrame;
         Image<Bgr, Byte> CVKinectColorFrame;
         
 
@@ -497,6 +497,7 @@ namespace CS682Project
                     }
                 });
 
+
                 //The rest is similar to the colorFrame data and is used to write the depth pixel data to the depth Writeable bitmap.
                 if (depthImageBitmap == null)
                 {
@@ -510,12 +511,48 @@ namespace CS682Project
                     kinectDepthImage.Source = depthImageBitmap;
                 }
 
-
                 this.depthImageBitmap.WritePixels(
                     new Int32Rect(0, 0, depthFrame.Width, depthFrame.Height),
                     depthColorImage,
                     depthFrame.Width * 4, 0
                     );
+#if false
+                System.Drawing.Bitmap DepthBitmap = BitmapSourceConverter.ToBitmap(depthImageBitmap);
+
+                CVKinectDepthFrame = BitmapSourceConverter.ToOpenCVImage<Bgr, Single>(DepthBitmap);
+
+                DepthBitmap.Dispose();
+
+                // Do stuff...
+                Image<Bgr, Single> imgX = CVKinectDepthFrame.Sobel(1, 0, 3);
+                Image<Bgr, Single> imgY = CVKinectDepthFrame.Sobel(0, 1, 3);
+
+                imgX.Pow(2);
+                imgY.Pow(2);
+                imgX.Add(imgY).Pow(0.5);
+
+                imgY.Dispose();
+
+                //Following processing of CV image need to convert back to Windows style bitmap.
+                BitmapSource bs = BitmapSourceConverter.ToBitmapSource(imgX);
+
+                imgX.Dispose();
+
+                //Dispose of the CV color image following the conversion.
+                CVKinectDepthFrame.Dispose();
+
+                int stride = bs.PixelWidth * (bs.Format.BitsPerPixel / 8);
+                byte[] data = new byte[stride * bs.PixelHeight];
+                bs.CopyPixels(data, stride, 0);
+                depthColorImage = data;
+
+                //Write our converted color pixel data to the original Writeable bitmap.
+                this.depthImageBitmap.WritePixels(
+                    new Int32Rect(0, 0, depthFrame.Width, depthFrame.Height),
+                    depthColorImage,
+                    depthFrame.Width * 4, 0
+                    ); 
+#endif
             }
         }
 
