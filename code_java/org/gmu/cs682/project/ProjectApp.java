@@ -27,6 +27,10 @@ import java.awt.event.WindowEvent;
 
 import javax.swing.JFrame;
 
+import org.opencv.core.Core;
+import org.opencv.core.CvType;
+import org.opencv.core.Mat;
+
 public class ProjectApp
 {
 
@@ -56,6 +60,8 @@ public class ProjectApp
     }
 
     public static void main(String s[]) {
+    	System.loadLibrary( Core.NATIVE_LIBRARY_NAME );
+    	
         JFrame f = new JFrame("CS682 Project");
         f.addWindowListener(new WindowAdapter() {
             public void windowClosing(WindowEvent e) {System.exit(0);}

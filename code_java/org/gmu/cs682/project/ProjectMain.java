@@ -20,14 +20,39 @@
 *****************************************************************************/
 package org.gmu.cs682.project;
 
+import org.opencv.core.Core;
+import org.opencv.core.CvType;
+import org.opencv.core.Mat;
+import org.opencv.core.Size;
+import org.opencv.imgproc.Imgproc;
 import org.openni.*;
 
 import java.nio.ShortBuffer;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.awt.*;
 import java.awt.image.*;
 
 class ProjectMain extends Component {
 
+	class DepthPixel implements Comparable<DepthPixel> {
+	    int index;
+	    float value;
+	    float direction;
+	    int group;
+
+	    public DepthPixel(int index, float value) {
+	        this.index = index;
+	        this.value = value;
+	    }
+	    
+	    @Override
+	    public int compareTo(DepthPixel o) {
+	        return value < o.value ? -1 : value > o.value ? 1 : 0;
+	    }
+	}
+	
     /**
 	 * 
 	 */
@@ -43,7 +68,7 @@ class ProjectMain extends Component {
 
     private final String SAMPLE_XML_FILE = "./config/Config.xml";    
     public ProjectMain() {
-
+    	
         try {
             scriptNode = new OutArg<ScriptNode>();
             context = Context.createFromXmlFile(SAMPLE_XML_FILE, scriptNode);
@@ -114,12 +139,58 @@ class ProjectMain extends Component {
             ShortBuffer depth = depthMD.getData().createShortBuffer();
             depth.rewind();
             
+            Mat image = Mat.zeros(height, width, CvType.CV_32F);
+            float floatBuff[] = new float[width*height];
+            image.get(0, 0, floatBuff);
+            
             while(depth.remaining() > 0)
             {
                 int pos = depth.position();
-                short pixel = depth.get();
-                imgbytes[pos] = (byte)histogram[pixel];
+                floatBuff[pos] = (float)depth.get();
             }
+            
+            image.put(0, 0, floatBuff);
+            
+            //Imgproc.GaussianBlur(image, image, new Size(3,3), 0, 0, Imgproc.BORDER_DEFAULT);
+            
+            Mat dx = Mat.zeros(height, width, CvType.CV_32F);
+            Mat dy = Mat.zeros(height, width, CvType.CV_32F);
+            
+            Imgproc.Sobel(image, dx, CvType.CV_32F, 1, 0);
+            Imgproc.Sobel(image, dy, CvType.CV_32F, 0, 1);
+            
+            Core.magnitude(dx, dy, image);
+            
+            
+            image.put(0, 0, floatBuff);
+            ArrayList<DepthPixel> pixelList = new ArrayList<DepthPixel>();
+            for (int i = 0; i < height*width; i++)
+            	pixelList.add(new DepthPixel(i, floatBuff[i]));
+            
+            // sort pixels by their gradient value
+            Collections.sort(pixelList);
+            
+            // group pixels according to the range threshold
+            float thresh = 30.0f;
+            float lastValue = pixelList.get(0).value;
+            int group = 0;
+            for (int i = 0; i < pixelList.size(); i++){
+            	if (pixelList.get(i).value - lastValue > thresh){
+            		pixelList.get(i).group = ++group;
+            	}
+            	else{
+            		pixelList.get(i).group = group;
+            	}
+            	lastValue = pixelList.get(i).value;
+            }
+            
+            System.out.println("There are [" + group + "] planes!");
+            
+            int stride = (int)(255.0/(float)group);
+            for (int i = 0; i < pixelList.size(); i++){
+            	imgbytes[pixelList.get(i).index] = (byte)(short)((float)(stride*pixelList.get(i).group));
+            }
+            
         } catch (GeneralException e) {
             e.printStackTrace();
         }
