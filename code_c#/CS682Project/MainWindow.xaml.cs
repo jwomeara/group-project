@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -48,8 +48,6 @@ namespace CS682Project
         int outerBandThreshold = 3;
         int kernelSize = 7;
         
-        
-        
         WriteableBitmap colorImageBitmap = null;
 
         short[] depthData = null;
@@ -63,8 +61,29 @@ namespace CS682Project
         Image<Bgr, Byte> CVKinectDepthFrame;
         Image<Bgr, Byte> CVKinectColorFrame;
         
+// *************
+// SNS - 04-14
+// *************
 
-        
+        // Plane Tracker to track planes from frame to frame
+        static PlaneTracker planetracker = null;
+
+        // read in an overlay image
+       static Image<Bgr, Byte> overlayImage = new Image<Bgr, Byte>(@"C:\Users\wayne\Desktop\ComputerVision\Shapes.jpg");
+       static Image<Bgr, Byte> overlayImage2 = new Image<Bgr, Byte>(@"C:\Users\wayne\Desktop\ComputerVision\Shapes1.jpg");
+       
+       
+        // make the overlay's "poly" which is just the corners of the image
+        System.Drawing.PointF[] overlayPoly = 
+                    { new System.Drawing.Point(0, 0), 
+                        new System.Drawing.Point(overlayImage.Size.Width, 0), 
+                        new System.Drawing.Point(overlayImage.Size.Width, overlayImage.Size.Height), 
+                        new System.Drawing.Point(0, overlayImage.Size.Height) };
+// *************
+// SNS - 04-14
+// *************
+
+       
         public MainWindow()
         {
             InitializeComponent();
@@ -80,17 +99,16 @@ namespace CS682Project
             this.sensorChooserUI.KinectSensorChooser = this.sensorChooser;
             this.sensorChooser.Start();
 
-
             //Eventhandlers for the depth, skeletal, and colorstreams. Skeleton is commented out as it isn't needed as of yet.
             this.sensorChooser.Kinect.ColorFrameReady += Kinect_ColorFrameReady;
             this.sensorChooser.Kinect.DepthFrameReady += Kinect_DepthFrameReady;
             //this.sensorChooser.Kinect.SkeletonFrameReady += Kinect_SkeletonFrameReady;
-            
         }
-
 
         void Kinect_ColorFrameReady(object sender, ColorImageFrameReadyEventArgs e)
         {
+            System.Diagnostics.Debug.WriteLine("color frame handler");
+        
             //Code between the hashtags includes the basics for rendering the colorstream.
             //############################################################################################
             using (ColorImageFrame colorFrame = e.OpenColorImageFrame())
@@ -143,22 +161,6 @@ namespace CS682Project
                 //act as the return type. That way the drawing of the various detection elements would be done within the function.
 
                 //####################################################################################################
-                //List<MCvBox2D> myBoxes = boxDetect(CannyCV);
-                //if (myBoxes != null)
-                //{
-                //    foreach (MCvBox2D box in myBoxes)
-                //        CVKinectColorFrame.Draw(box, new Bgr(System.Drawing.Color.Blue), 2);
-                //}
-
-
-                //LineSegment2D[] myLines = lineDetect(CannyCV);
-
-                //if(myLines != null)
-                //{
-                //    foreach (LineSegment2D line in myLines)
-                //        CVKinectColorFrame.Draw(line, new Bgr(System.Drawing.Color.Green), 2);
-                //}
-
 
                 //Dectect polyLines that form quadralaterals.
                 List<System.Drawing.Point[]> myPoly = polyDetect(grayTempCV);
@@ -168,8 +170,46 @@ namespace CS682Project
                     foreach (System.Drawing.Point[] polyLine in myPoly)
                         CVKinectColorFrame.DrawPolyline(polyLine, true, new Bgr(System.Drawing.Color.Red), 2);
                 }
+
                 //##################################################################################################
 
+// **************************************
+// SNS - 04-14
+// **************************************
+
+                // After we find the polylines' vertices we can do the transformation
+                // need to have this in PointF versus Point. Blahblahblah
+ //               System.Diagnostics.Debug.WriteLine("stephanies code");
+
+                if (myPoly != null && myPoly.Count > 0)
+                {
+                    if (planetracker == null && myPoly.Count >=2)
+                    {
+                        Plane plane0 = new Plane();
+                        Plane plane1 = new Plane();
+                        plane0.SetPoints(myPoly[0]);
+                        plane0.SetOverlayImage(overlayImage);
+                        plane1.SetPoints(myPoly[1]);
+                        plane1.SetOverlayImage(overlayImage2);
+
+                        // first frame where we found polygons. initialize the plane tracker
+                        planetracker = new PlaneTracker(new List<Plane> {plane0, plane1});
+                    }
+                    
+                    if (planetracker != null)
+                    {
+                        // not the first frame. try to update the values in the plane tracker
+                        System.Diagnostics.Debug.WriteLine("update planes");
+
+                        planetracker.UpdatePlanes(myPoly);
+
+                        // create the overlay using the planes in plane tracker
+                        foreach (Plane plane in planetracker.GetPlanes())
+                        {
+                            createOverlay(plane.GetPoints(), plane.GetOverlayImage());
+                        }
+                    }
+                }
 
 
                 //Once we are finished with the gray temp image it needs to be disposed of. 
@@ -178,7 +218,10 @@ namespace CS682Project
 
                 //Following processing of CV image need to convert back to Windows style bitmap.
                 BitmapSource bs = BitmapSourceConverter.ToBitmapSource(CVKinectColorFrame);
-                
+                System.Diagnostics.Debug.WriteLine("conversion done");
+        
+
+
                 //Dispose of the CV color image following the conversion.
                 CVKinectColorFrame.Dispose();
 
@@ -193,7 +236,6 @@ namespace CS682Project
                     colorData,
                     colorFrame.Width * colorFrame.BytesPerPixel, 0
                     );
-
             }
         }
 
@@ -237,12 +279,22 @@ namespace CS682Project
         {
             
             List<System.Drawing.Point[]> mypts = new List<System.Drawing.Point[]>();
-            
+
+// *************
+// SNS - 04-14
+// *************
+            List<System.Drawing.Point[]> snsPts = new List<System.Drawing.Point[]>();
+// *************
+// SNS - 04-14
+// *************
+
             using (MemStorage storage = new MemStorage())
                 
                 for (Contour<System.Drawing.Point> contours = myImage.FindContours(CHAIN_APPROX_METHOD.CV_CHAIN_APPROX_SIMPLE,RETR_TYPE.CV_RETR_EXTERNAL); contours != null; contours = contours.HNext)
                 {
                     Contour<System.Drawing.Point> currentContour = contours.ApproxPoly(contours.Perimeter * 0.1, storage);
+
+                    // SNS - change this back to 150 when done
 
                     //Check to see if the contour forms a enclosed quadralateral with a desired minimum area.
                     if (Math.Abs(currentContour.Area) > 150 && currentContour.Convex == true && currentContour.Total == 4)//
@@ -252,8 +304,93 @@ namespace CS682Project
                         mypts.Add(pts);
                     }
                 }
-            return mypts;
+
+// *************
+// SNS - 04-14
+// *************           
+            snsPts = OrderPoints(mypts);
+            return snsPts;
+
+            //return mypts;
+// *************
+// SNS - 04-14
+// *************
         }
+
+// *******************
+// SNS Added 04-24-14
+// *******************
+        public void createOverlay(System.Drawing.Point[] myPoly, Image<Bgr, Byte> overlayImage) {
+                     
+            System.Drawing.Point[] singlePoly = myPoly;
+            System.Drawing.PointF[] singlePolyF = Array.ConvertAll(singlePoly, item => (System.Drawing.PointF)item);
+
+//          System.Diagnostics.Debug.WriteLine(singlePolyF[0] + " " + singlePolyF[1] + " " + singlePolyF[2] + " " + singlePolyF[3]);
+
+            // Compute the transform matrix
+            // GetPerspectiveTransform wants PointF[] arrays
+            HomographyMatrix matrixM = CameraCalibration.GetPerspectiveTransform(overlayPoly, singlePolyF);
+                        
+            // then we need to overlay the transformation onto the original image
+            Image<Bgr, Byte> whiteOverlay = new Image<Bgr, Byte>(overlayImage.Size.Width, overlayImage.Size.Height, new Bgr(255, 255, 255));
+            Image<Bgr, Byte> mask = new Image<Bgr, Byte>(CVKinectColorFrame.Size.Width, CVKinectColorFrame.Size.Height, new Bgr(0,0,0));
+                       
+            // apply perspective transform to the white image to make a mask
+            mask = whiteOverlay.WarpPerspective(matrixM, CVKinectColorFrame.Size.Width, CVKinectColorFrame.Size.Height, Emgu.CV.CvEnum.INTER.CV_INTER_NN, Emgu.CV.CvEnum.WARP.CV_WARP_DEFAULT, new Bgr(0, 0, 0));
+//            System.Diagnostics.Debug.WriteLine("warp perspective done");
+
+            // mask.Save(@"C:\Users\wayne\Desktop\Mask.jpg");
+
+            // apply warpPerspective to the image we want to warp
+            Image<Bgr, Byte> correctedOverlay = overlayImage.WarpPerspective(matrixM, Emgu.CV.CvEnum.INTER.CV_INTER_NN, Emgu.CV.CvEnum.WARP.CV_WARP_DEFAULT, new Bgr(0,0,0));
+ //           System.Diagnostics.Debug.WriteLine("warp perspective 2 done");
+            // correctedOverlay.Save(@"C:\Users\wayne\Desktop\Corrected.jpg");
+
+            // copy the correctd overlay onto the kinect image using the mask
+            correctedOverlay.Copy(CVKinectColorFrame, mask.Convert<Gray, Byte>());
+            // CVKinectColorFrame.Save(@"C:\Users\wayne\Desktop\frame.jpg");
+
+            mask.Dispose();
+            whiteOverlay.Dispose();
+//          correctedOverlay.Dispose();
+//          matrixM.Dispose();
+
+// *************
+// SNS - 04-14
+// *************
+        }
+
+        /// <summary>
+        /// Returns the list sorted so that the leftmost point is first.
+        /// </summary>
+        /// <param name="pointsList"></param>
+        /// <returns>list of poly points where they start with leftmost point</returns>
+        public List<System.Drawing.Point[]> OrderPoints(List<System.Drawing.Point[]> pointsList) {
+    
+            List<System.Drawing.Point[]> sortedList = new List<System.Drawing.Point[]>();
+
+            foreach (System.Drawing.Point[] points in pointsList) { 
+
+                var sorted = points.OrderBy(point => point.X).ThenBy(point => point.Y);
+                System.Drawing.Point[] sortedPoints = new System.Drawing.Point[4];
+                
+                sortedPoints[0] = sorted.ElementAt(0);
+
+                System.Drawing.Point firstPoint = sortedPoints[0];
+
+                // get the index of the starting point in the original list.
+                int firstIndex = Array.FindIndex(points, item => item == sortedPoints[0]);
+                
+                // now find the other items to add to sortedList
+                sortedPoints[1] = points[(firstIndex + 3) % 4];
+                sortedPoints[2] = points[(firstIndex + 2) % 4];
+                sortedPoints[3] = points[(firstIndex + 1) % 4];
+
+                sortedList.Add(sortedPoints);
+            }
+            return sortedList;
+        }
+
 
 
         //Not sure if we'll need the skeleton tracking but I included the basic code should you want to play around with it.
