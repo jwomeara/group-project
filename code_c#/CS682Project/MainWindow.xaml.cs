@@ -37,7 +37,6 @@ namespace CS682Project
     {
         private KinectSensorChooser sensorChooser;
 
-        WriteableBitmap depthImageBitmap = null;
         short[] depthArray = null;
         short[] smoothDepthArray = null;
         int width = 640;
@@ -64,7 +63,59 @@ namespace CS682Project
         Image<Bgr, Byte> CVKinectColorFrame;
         
 
-        
+        // Whitney's additions
+        private const int ringBufferSize = 10;
+
+        private DepthImagePixel[] depthPixels;
+        private WriteableBitmap depthBitmap = null;
+
+        private int ringBufIdx = 0;
+        private int frameSize;
+        private bool ready = false;
+        private short[] depthRingBuffer;
+        private long[] depthRunningSum;
+        private byte[] depthRGBPixels;
+
+        private bool isActive = false;
+        private Object dpLock = new Object();
+
+        private Image<Bgr, Single> depthImgCV;
+        private Image<Bgr, Single> dxImgCV;
+        private Image<Bgr, Single> dyImgCV;
+
+        private void InitData()
+        {
+            // save the frame size
+            this.frameSize = this.sensorChooser.Kinect.DepthStream.FramePixelDataLength;
+
+            // Allocate space to put the depth pixels we'll receive
+            this.depthPixels = new DepthImagePixel[frameSize];
+
+            // This is the bitmap we'll display on-screen
+            this.depthBitmap = new WriteableBitmap(
+                                this.sensorChooser.Kinect.DepthStream.FrameWidth, 
+                                this.sensorChooser.Kinect.DepthStream.FrameHeight, 
+                                96.0, 
+                                96.0, 
+                                PixelFormats.Bgr32, 
+                                null);
+
+            // use a ring buffer to keep track of the last N buffers
+            this.depthRingBuffer = new short[frameSize * ringBufferSize];
+
+            // this is the current running sum for the depth ring
+            this.depthRunningSum = new long[frameSize];
+
+            // assign the depth bitmap to the image source
+            kinectDepthImage.Source = depthBitmap;
+
+            // Allocate space to put the color pixels we'll create
+            this.depthRGBPixels = new byte[frameSize * sizeof(int)];
+
+            // allocate space for the opencv image
+            this.depthImgCV = new Image<Bgr, Single>(this.sensorChooser.Kinect.DepthStream.FrameWidth, this.sensorChooser.Kinect.DepthStream.FrameHeight);
+        }
+
         public MainWindow()
         {
             InitializeComponent();
@@ -80,12 +131,14 @@ namespace CS682Project
             this.sensorChooserUI.KinectSensorChooser = this.sensorChooser;
             this.sensorChooser.Start();
 
+            // initialize our data structures
+            InitData();
 
             //Eventhandlers for the depth, skeletal, and colorstreams. Skeleton is commented out as it isn't needed as of yet.
             this.sensorChooser.Kinect.ColorFrameReady += Kinect_ColorFrameReady;
-            this.sensorChooser.Kinect.DepthFrameReady += Kinect_DepthFrameReady;
+            this.sensorChooser.Kinect.DepthFrameReady += SensorDepthFrameReady;
+            //this.sensorChooser.Kinect.DepthFrameReady += Kinect_DepthFrameReady;
             //this.sensorChooser.Kinect.SkeletonFrameReady += Kinect_SkeletonFrameReady;
-            
         }
 
 
@@ -255,307 +308,127 @@ namespace CS682Project
             return mypts;
         }
 
-
-        //Not sure if we'll need the skeleton tracking but I included the basic code should you want to play around with it.
-        
-        //void Kinect_SkeletonFrameReady(object sender, SkeletonFrameReadyEventArgs e)
-        //{
-            ////string message = "No Skeleton Data";
-
-            //Skeleton[] skeletons = null;
-            //myBones = new Line[20];
-
-            //using (SkeletonFrame frame = e.OpenSkeletonFrame())
-            //{
-            //    if (frame != null)
-            //    {
-            //        skeletons = new Skeleton[frame.SkeletonArrayLength];
-            //        frame.CopySkeletonDataTo(skeletons);
-            //    }
-            //}
-
-            //if (skeletons == null) return;
-
-            ////canvas.Children.Clear();
-
-            //foreach (Skeleton skeleton in skeletons)
-            //{
-            //    if (skeleton.TrackingState == SkeletonTrackingState.Tracked)
-            //    {
-
-            //        myJoints[0] = findJoint(skeleton.Joints[JointType.HandRight]);
-            //        myJoints[1] = findJoint(skeleton.Joints[JointType.HandLeft]);
-            //    }
-            //}
-                   
-        //}
-
-        //This function is used for drawing the individual bonelines.
-        //Once the line has been returned you just need to add it to the desired canvas.
-        //public Line addLine(Joint j1, Joint j2)
-        //{
-        //    Line boneLine = new Line();
-        //    boneLine.Stroke = skeletonBrush;
-        //    boneLine.StrokeThickness = 5;
-
-        //    ColorImagePoint j1P = this.sensorChooser.Kinect.CoordinateMapper.MapSkeletonPointToColorPoint(j1.Position, ColorImageFormat.RgbResolution640x480Fps30);
-
-
-        //    boneLine.X1 = j1P.X / 2;
-        //    boneLine.Y1 = j1P.Y / 2;
-
-        //    ColorImagePoint j2P = this.sensorChooser.Kinect.CoordinateMapper.MapSkeletonPointToColorPoint(j2.Position, ColorImageFormat.RgbResolution640x480Fps30);
-
-        //    boneLine.X2 = j2P.X / 2;
-        //    boneLine.Y2 = j2P.Y / 2;
-
-        //    return boneLine;
-        //}
-
-        
-        //The following is manages the depth stream. This is slightly more complicated than the normal implementation as I've
-        //included a hole filling, smoothging, and averaging algorithm.
-        void Kinect_DepthFrameReady(object sender, DepthImageFrameReadyEventArgs e)
+        /// <summary>
+        /// Event handler for Kinect sensor's DepthFrameReady event
+        /// </summary>
+        /// <param name="sender">object sending the event</param>
+        /// <param name="e">event arguments</param>
+        private void SensorDepthFrameReady(object sender, DepthImageFrameReadyEventArgs e)
         {
             using (DepthImageFrame depthFrame = e.OpenDepthImageFrame())
             {
-
-                if (depthFrame == null) return;
-
-                if (depthData == null) depthData = new short[depthFrame.PixelDataLength];
-
-                if (depthColorImage == null) depthColorImage = new byte[depthFrame.PixelDataLength * 4];
-
-                depthFrame.CopyPixelDataTo(depthData);
-
-                if (depthArray == null) depthArray = new short[depthData.Length];
-
-                if (smoothDepthArray == null) smoothDepthArray = new short[depthData.Length];
-
-                depthArray = depthData;
-
-
-                //The following code looks for holes in the depth image and fills them using the mode of surronding pixels.
-                Parallel.For(0, 480, depthArrayRowIndex =>
+                if (depthFrame != null)
                 {
-                    // Process each pixel in the row
-                    for (int depthArrayColumnIndex = 0; depthArrayColumnIndex < 640; depthArrayColumnIndex++)
+                    // determine whether to dispatch a thread with this data
+                    lock (dpLock)
                     {
-
-                        var depthIndex = depthArrayColumnIndex + (depthArrayRowIndex * 640);
-
-                        // We are only concerned with eliminating 'white' noise from the data.
-                        // We consider any pixel with a depth of 0 as a possible candidate for filtering.
-                        if (depthArray[depthIndex] == 0)
+                        // if the thread is not active
+                        if (!isActive)
                         {
-                            // From the depth index, we can determine the X and Y coordinates that the index
-                            // will appear in the image. We use this to help us define our filter matrix.
-                            int x = depthIndex % 640;
-                            int y = (depthIndex - x) / 640;
+                            isActive = true;
+                            // Copy the pixel data from the image to a temporary array
+                            depthFrame.CopyDepthImagePixelDataTo(this.depthPixels);
 
-                            // The filter collection is used to count the frequency of each
-                            // depth value in the filter array. This is used later to determine
-                            // the statistical mode for possible assignment to the candidate.
-
-                            short[] myfilter = new short[(kernelSize ^ 2) - 1];
-
-                            // The inner and outer band counts are used later to compare against the threshold 
-                            // values set in the UI to identify a positive filter result.
-                            int innerBandCount = 0;
-                            int outerBandCount = 0;
-
-                            // The following loops will loop through a 5 X 5 matrix of pixels surrounding the 
-                            // candidate pixel. This defines 2 distinct 'bands' around the candidate pixel.
-                            // If any of the pixels in this matrix are non-0, we will accumulate them and count
-                            // how many non-0 pixels are in each band. If the number of non-0 pixels breaks the
-                            // threshold in either band, then the average of all non-0 pixels in the matrix is applied
-                            // to the candidate pixel.
-                            for (int yi = -(kernelSize / 2); yi < (kernelSize / 2) + 1; yi++)
-                            {
-                                for (int xi = -(kernelSize / 2); xi < (kernelSize / 2) + 1; xi++)
-                                {
-                                    // yi and xi are modifiers that will be subtracted from and added to the
-                                    // candidate pixel's x and y coordinates that we calculated earlier. From the
-                                    // resulting coordinates, we can calculate the index to be addressed for processing.
-
-                                    // We do not want to consider the candidate
-                                    // pixel (xi = 0, yi = 0) in our process at this point.
-                                    // We already know that it's 0
-                                    if (xi != 0 || yi != 0)
-                                    {
-                                        // We then create our modified coordinates for each pass
-                                        var xSearch = x + xi;
-                                        var ySearch = y + yi;
-
-                                        // While the modified coordinates may in fact calculate out to an actual index, it 
-                                        // might not be the one we want. Be sure to check
-                                        // to make sure that the modified coordinates
-                                        // match up with our image bounds.
-                                        if (xSearch >= 0 && xSearch <= widthBound && ySearch >= 0 && ySearch <= heightBound)
-                                        {
-                                            var index = xSearch + (ySearch * width);
-                                            // We only want to look for non-0 values
-                                            if (depthArray[index] != 0)
-                                            {
-
-                                                // We want to find count the frequency of each depth
-                                                for (int i = 0; i < (kernelSize ^ 2) - 1; i++)
-                                                {
-                                                    myfilter[i] = depthArray[index];
-                                                }
-
-                                                // We will then determine which band the non-0 pixel
-                                                // was found in, and increment the band counters.
-                                                if (yi != (kernelSize / 2) && yi != -(kernelSize / 2) && xi != (kernelSize / 2) && xi != -(kernelSize / 2))
-                                                    innerBandCount++;
-                                                else
-                                                    outerBandCount++;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-
-
-                            // Once we have determined our inner and outer band non-zero counts, and 
-                            // accumulated all of those values, we can compare it against the threshold
-                            // to determine if our candidate pixel will be changed to the
-                            // statistical mode of the non-zero surrounding pixels.
-                            if (innerBandCount >= innerBandThreshold || outerBandCount >= outerBandThreshold)
-                            {
-                                short mode = myfilter.GroupBy(v => v).OrderByDescending(g => g.Count()).First(g => g.Key != 0).Key;
-                                //short mode = myfilter.GroupBy(v => v).OrderByDescending(g => g.Count()).First().Key;
-                                smoothDepthArray[depthIndex] = mode;
-                            }
-                        }
-                        else
-                        {
-                            // If the pixel is not zero, we will keep the original depth.
-                            smoothDepthArray[depthIndex] = depthArray[depthIndex];
+                            Thread t = new Thread(() => ProcessDepthData(depthFrame.MinDepth, depthFrame.MaxDepth));
+                            t.Start();
                         }
                     }
-                });
-
-
-                //The following code creates a queue of depth frames which will be used to create a moving average of the depth.
-                //This provides a more consistent value of depth as the IR tends to be noisy and fluctuate over time.
-
-                myDepthQueue.Enqueue(smoothDepthArray);
-                //myDepthQueue.Enqueue(depthData);
-
-                //Currently set to hold five frames. Any more and things slow down.
-                while (myDepthQueue.Count > 5) myDepthQueue.Dequeue();
-
-
-                int[] sumDepthArray = new int[depthData.Length];
-
-                short[] avg_depthData = new short[depthData.Length];
-
-                int denom = 0;
-                int count = 1;
-
-                foreach (var item in myDepthQueue)
-                {
-                    Parallel.For(0, 480, depthRow =>
-                    {
-                        for (int depthCol = 0; depthCol < 640; depthCol++)
-                        {
-                            var index = depthCol + (depthRow * 640);
-
-                            sumDepthArray[index] += item[index] * count;
-                        }
-                    });
-
-                    denom += count;
-                    count++;
                 }
-
-
-                Parallel.For(0, depthData.Length, i =>
-                {
-                    avg_depthData[i] = (short)(int)(sumDepthArray[i] / denom);
-                });
-
-
-                //Unlike colorFrame data which is already in a BGR format, the depth data contains additional bits of data used
-                //to store player index information. This must be removed in order to display the depth data.
-                Parallel.For(0, 480, depthRow =>
-                {
-                    for (int depthCol = 0; depthCol < 640; depthCol++)
-                    {
-                        var depthIndex = depthCol + (depthRow * 640);
-                        var index = depthIndex * 4;
-
-                        int depthValue = depthData[depthIndex] >> 3;
-
-                        byte depthByte = (byte)(255 - ((int)depthValue >> 4));
-                        depthColorImage[index] = depthByte; //Blue
-                        depthColorImage[index + 1] = depthByte; //Green
-                        depthColorImage[index + 2] = depthByte; //Red
-                        depthColorImage[index + 3] = 0; //Alpha
-                    }
-                });
-
-
-                //The rest is similar to the colorFrame data and is used to write the depth pixel data to the depth Writeable bitmap.
-                if (depthImageBitmap == null)
-                {
-                    this.depthImageBitmap = new WriteableBitmap(
-                        depthFrame.Width,
-                        depthFrame.Height,
-                        96,
-                        96,
-                        PixelFormats.Bgr32,
-                        null);
-                    kinectDepthImage.Source = depthImageBitmap;
-                }
-
-                this.depthImageBitmap.WritePixels(
-                    new Int32Rect(0, 0, depthFrame.Width, depthFrame.Height),
-                    depthColorImage,
-                    depthFrame.Width * 4, 0
-                    );
-#if false
-                System.Drawing.Bitmap DepthBitmap = BitmapSourceConverter.ToBitmap(depthImageBitmap);
-
-                CVKinectDepthFrame = BitmapSourceConverter.ToOpenCVImage<Bgr, Single>(DepthBitmap);
-
-                DepthBitmap.Dispose();
-
-                // Do stuff...
-                Image<Bgr, Single> imgX = CVKinectDepthFrame.Sobel(1, 0, 3);
-                Image<Bgr, Single> imgY = CVKinectDepthFrame.Sobel(0, 1, 3);
-
-                imgX.Pow(2);
-                imgY.Pow(2);
-                imgX.Add(imgY).Pow(0.5);
-
-                imgY.Dispose();
-
-                //Following processing of CV image need to convert back to Windows style bitmap.
-                BitmapSource bs = BitmapSourceConverter.ToBitmapSource(imgX);
-
-                imgX.Dispose();
-
-                //Dispose of the CV color image following the conversion.
-                CVKinectDepthFrame.Dispose();
-
-                int stride = bs.PixelWidth * (bs.Format.BitsPerPixel / 8);
-                byte[] data = new byte[stride * bs.PixelHeight];
-                bs.CopyPixels(data, stride, 0);
-                depthColorImage = data;
-
-                //Write our converted color pixel data to the original Writeable bitmap.
-                this.depthImageBitmap.WritePixels(
-                    new Int32Rect(0, 0, depthFrame.Width, depthFrame.Height),
-                    depthColorImage,
-                    depthFrame.Width * 4, 0
-                    ); 
-#endif
             }
         }
 
+        private void ProcessDepthData(int minDepth, int maxDepth)
+        {
+            // Save this frame in our ring buffer
+            for (int i = 0; i < this.depthPixels.Length; ++i)
+            {
+                // Get the depth for this pixel
+                short depth = depthPixels[i].Depth;
+
+                // if we have a full ring buffer, subtract the oldest entry from the running sum
+                if (ready)
+                    depthRunningSum[i] -= depthRingBuffer[ringBufIdx * frameSize + i];
+
+                // save this pixel for this frame, and update the running sum
+                depthRingBuffer[ringBufIdx * frameSize + i] = (depth >= minDepth && depth <= maxDepth) ? depth : (short)0;
+                depthRunningSum[i] += depthRingBuffer[ringBufIdx * frameSize + i];
+            }
+
+            // increment the ring buffer index
+            ringBufIdx = (ringBufIdx + 1) % ringBufferSize;
+
+            // if we have a full ring buffer, enable image processing
+            if (!ready && ringBufIdx == 0)
+                ready = true;
+
+            // perform image processing if we have a full circular buffer
+            if (ready)
+            {
+
+                // Convert the depth to RGB
+                for (int i = 0; i < this.depthRunningSum.Length; ++i)
+                {
+                    long longVal = depthRunningSum[i] / ringBufferSize * 256 / this.sensorChooser.Kinect.DepthStream.MaxDepth;
+                    float floatVal = depthRunningSum[i] / ringBufferSize;
+
+                    // Get the depth for this pixel
+                    byte depth = (byte)longVal;
+
+                    int x = i / this.sensorChooser.Kinect.DepthStream.FrameWidth;
+                    int y = i % this.sensorChooser.Kinect.DepthStream.FrameWidth;
+
+                    // Write out blue byte
+                    this.depthRGBPixels[i * 4] = depth;
+                    depthImgCV.Data[x, y, 0] = floatVal;
+
+                    // Write out green byte
+                    this.depthRGBPixels[i * 4 + 1] = depth;
+                    depthImgCV.Data[x, y, 1] = floatVal;
+
+                    // Write out red byte                        
+                    this.depthRGBPixels[i * 4 + 2] = depth;
+                    depthImgCV.Data[x, y, 2] = floatVal;
+                }
+
+                // OpenCV processing here!
+                depthImgCV = depthImgCV.SmoothGaussian(5, 5, 34.3, 34.3);
+
+                dxImgCV = depthImgCV.Sobel(1, 0, 3).Pow(2);
+                dyImgCV = depthImgCV.Sobel(0, 1, 3).Pow(2);
+                dxImgCV.Add(dyImgCV).Pow(0.5);
+
+                // save the points to the output buffer
+                for (int i = 0; i < dxImgCV.Cols*dxImgCV.Rows; ++i)
+                {
+                    int x = i / this.sensorChooser.Kinect.DepthStream.FrameWidth;
+                    int y = i % this.sensorChooser.Kinect.DepthStream.FrameWidth;
+
+                    // Write out blue byte
+                    this.depthRGBPixels[i * 4] = (byte)(short)(dxImgCV.Data[x, y, 0]/10000);
+
+                    // Write out green byte
+                    this.depthRGBPixels[i * 4 + 1] = (byte)(short)(dxImgCV.Data[x, y, 1]/10000);
+
+                    // Write out red byte                        
+                    this.depthRGBPixels[i * 4 + 2] = (byte)(short)(dxImgCV.Data[x, y, 2]/10000);
+                }
+
+                // Write the pixel data into our bitmap
+                this.Dispatcher.Invoke((Action)(() =>
+                {
+                    this.depthBitmap.WritePixels(
+                        new Int32Rect(0, 0, this.depthBitmap.PixelWidth, this.depthBitmap.PixelHeight),
+                        this.depthRGBPixels,
+                        this.depthBitmap.PixelWidth * sizeof(int),
+                        0);
+                }));
+            }
+
+            lock (dpLock)
+            {
+                isActive = false;
+            }
+        }
 
         //Kinect sensor chooser. Honestly its really only impacts the skeleton tracking settings for the most part, as
         //the depth and color frame data and settings are handled same for Xbox and Windows based sensors.
