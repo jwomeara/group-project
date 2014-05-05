@@ -17,10 +17,11 @@ namespace CS682Project
     {
         private Image<Bgr, Byte> overlayImage;
         private System.Drawing.Point[] points;
-        private System.Drawing.PointF centroid;
+        private int deathClock = 0;
 
-        public System.Drawing.PointF GetCentroid() {
-            return centroid;
+
+        public int GetDeathClock() {
+            return deathClock;
         }
 
 	    public Image<Bgr, Byte> GetOverlayImage() {
@@ -31,8 +32,8 @@ namespace CS682Project
 		    return points;
 	    }
 	
-	    public void SetCenter(System.Drawing.PointF center) {
-		    this.centroid = center;
+	    public void SetDeathClock(int value) {
+		    this.deathClock = value;
 	    }
 	
 	    public void SetOverlayImage(Image<Bgr, Byte> overlayImage) {
