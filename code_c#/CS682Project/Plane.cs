@@ -15,7 +15,7 @@ namespace CS682Project
 {
     class Plane
     {
-        private Image<Bgr, Byte> overlayImage;
+        private int overlayImageIndex;
         private System.Drawing.Point[] points;
         private int deathClock = 0;
 
@@ -24,8 +24,8 @@ namespace CS682Project
             return deathClock;
         }
 
-	    public Image<Bgr, Byte> GetOverlayImage() {
-		    return overlayImage;
+	    public int GetOverlayImageIndex() {
+		    return overlayImageIndex;
 	    }
 	
 	    public System.Drawing.Point[] GetPoints() {
@@ -36,8 +36,8 @@ namespace CS682Project
 		    this.deathClock = value;
 	    }
 	
-	    public void SetOverlayImage(Image<Bgr, Byte> overlayImage) {
-		    this.overlayImage = overlayImage;
+	    public void SetOverlayImageIndex(int overlayImageIndex) {
+		    this.overlayImageIndex = overlayImageIndex;
 	    }
 	
 	    public void SetPoints(System.Drawing.Point[] points) {
