@@ -61,6 +61,41 @@ namespace CS682Project
         Image<Bgr, Byte> CVKinectDepthFrame;
         Image<Bgr, Byte> CVKinectColorFrame;
         
+        private bool dpActive = false;
+        private Object dpLock = new Object();
+
+        private bool clrActive = false;
+        private Object clrLock = new Object();
+
+        // Whitney's additions
+        private const int ringBufferSize = 1;
+        private const int depthKernelSize = 1; //11
+        private const double minDotProd = 0.82; //.99
+        private const bool useFloodFill = true;
+        private const bool usedgeDetect = false;
+        private const int minGroupSize = 1500;
+
+        private DepthImagePixel[] depthPixels;
+        private WriteableBitmap depthBitmap = null;
+
+        private int ringBufIdx = 0;
+        private int frameSize;
+        private bool ready = false;
+        private short[] depthRingBuffer;
+        private long[] depthRunningSum;
+        private byte[] depthRGBPixels;
+
+        private Image<Bgr, Single> depthImgCV;
+        private Image<Bgr, Single> dxImgCV;
+        private Image<Bgr, Single> dyImgCV;
+        private Image<Bgr, Single> depthImgOutCV;
+        private float[] pixelMag;
+        private int[] pixelState;
+        private List<int> groupCount;
+
+        byte[] colorData;
+
+
 // *************
 // SNS - 04-14
 // *************
@@ -83,12 +118,51 @@ namespace CS682Project
 // SNS - 04-14
 // *************
 
-       
         public MainWindow()
         {
             InitializeComponent();
 
             Loaded += OnLoaded;
+        }
+
+        private void InitData()
+        {
+            // save the frame size
+            frameSize = sensorChooser.Kinect.DepthStream.FramePixelDataLength;
+
+            // Allocate space to put the depth pixels we'll receive
+            depthPixels = new DepthImagePixel[frameSize];
+            colorData = new byte[frameSize];
+
+            // This is the bitmap we'll display on-screen
+            depthBitmap = new WriteableBitmap(
+                                sensorChooser.Kinect.DepthStream.FrameWidth, 
+                                sensorChooser.Kinect.DepthStream.FrameHeight, 
+                                96.0, 
+                                96.0, 
+                                PixelFormats.Bgr32, 
+                                null);
+
+            // use a ring buffer to keep track of the last N buffers
+            depthRingBuffer = new short[frameSize * ringBufferSize];
+
+            // this is the current running sum for the depth ring
+            depthRunningSum = new long[frameSize];
+
+            // assign the depth bitmap to the image source
+            kinectDepthImage.Source = depthBitmap;
+
+            // Allocate space to put the color pixels we'll create
+            depthRGBPixels = new byte[frameSize * sizeof(int)];
+
+            // allocate space for the opencv image
+            depthImgCV = new Image<Bgr, Single>(sensorChooser.Kinect.DepthStream.FrameWidth, sensorChooser.Kinect.DepthStream.FrameHeight);
+            dxImgCV = new Image<Bgr, Single>(sensorChooser.Kinect.DepthStream.FrameWidth, sensorChooser.Kinect.DepthStream.FrameHeight);
+            dyImgCV = new Image<Bgr, Single>(sensorChooser.Kinect.DepthStream.FrameWidth, sensorChooser.Kinect.DepthStream.FrameHeight);
+            depthImgOutCV = new Image<Bgr, Single>(sensorChooser.Kinect.DepthStream.FrameWidth, sensorChooser.Kinect.DepthStream.FrameHeight);
+
+            pixelMag = new float[sensorChooser.Kinect.DepthStream.FrameWidth * sensorChooser.Kinect.DepthStream.FrameHeight];
+            pixelState = new int[sensorChooser.Kinect.DepthStream.FrameWidth * sensorChooser.Kinect.DepthStream.FrameHeight];
         }
 
         private void OnLoaded(object sender, RoutedEventArgs e)
@@ -105,141 +179,632 @@ namespace CS682Project
             //this.sensorChooser.Kinect.SkeletonFrameReady += Kinect_SkeletonFrameReady;
         }
 
-        void Kinect_ColorFrameReady(object sender, ColorImageFrameReadyEventArgs e)
+        private void Kinect_ColorFrameReady(object sender, ColorImageFrameReadyEventArgs e)
         {
-            System.Diagnostics.Debug.WriteLine("color frame handler");
-        
-            //Code between the hashtags includes the basics for rendering the colorstream.
-            //############################################################################################
             using (ColorImageFrame colorFrame = e.OpenColorImageFrame())
             {
-                if (colorFrame == null) return;
-
-                byte[] colorData = new byte[colorFrame.PixelDataLength];
-
-                colorFrame.CopyPixelDataTo(colorData);
-
-                if (colorImageBitmap == null)
+                if (colorFrame != null)
                 {
-                    this.colorImageBitmap = new WriteableBitmap(
-                        colorFrame.Width,
-                        colorFrame.Height,
-                        96,
-                        96,
-                        PixelFormats.Bgr32,
-                        null);
-                    kinectColorImage.Source = colorImageBitmap;
+                    // determine whether to dispatch a thread with this data
+                    lock (clrLock)
+                    {
+                        // if the thread is not active
+                        if (!clrActive)
+                        {
+                            clrActive = true;
+
+                            // Copy the pixel data from the image to a temporary array
+                            colorFrame.CopyPixelDataTo(colorData);
+
+                            Thread t = new Thread(() => ProcessColorFrame(colorFrame.BytesPerPixel));
+                            t.Start();
+                        }
+                    }
                 }
+            }
+        }
 
-                this.colorImageBitmap.WritePixels(
-                    new Int32Rect(0, 0, colorFrame.Width, colorFrame.Height),
-                    colorData,
-                    colorFrame.Width * colorFrame.BytesPerPixel, 0
-                    );
-                //############################################################################################
-                
-                //The following code demonstrates the conversion of the Kinect Writeable Bitmap to
-                //the Image<,>  format handled by the EMGU OpenCV wrapper.
-
-                System.Drawing.Bitmap ColorBitmap = BitmapSourceConverter.ToBitmap(colorImageBitmap);
-
-                CVKinectColorFrame = BitmapSourceConverter.ToOpenCVImage<Bgr, Byte>(ColorBitmap);
-
-                //Once the image has been converted to a Image<Bgr, Byte> a second temporary Image<Gray, Byte>
-                //is created on which we can run the various filtering and detection algorithms on.
-                Image<Gray, Byte> grayTempCV = CVKinectColorFrame.Convert<Gray, Byte>();
-
-                //Apply Gaussian smoothing with 3x3 kernel and simga = 2.
-                grayTempCV._SmoothGaussian(3, 3, 2, 2);
-
-                //Run canny detection to obtain image edges.
-                grayTempCV = grayTempCV.Canny(150, 25);//(400, 200);
-
-                //The following code demonstrates box, line, and polyLine detection.
-                //Haven't cleaned these functions up yet, currently they accept an Image<Gray, Byte>. Was thinking that depending
-                //on the design maybe we pass an Image<Gray, Byte> as the source, as well as the Image<Bgr, Byte> which would also
-                //act as the return type. That way the drawing of the various detection elements would be done within the function.
-
-                //####################################################################################################
-
-                //Dectect polyLines that form quadralaterals.
-                List<System.Drawing.Point[]> myPoly = polyDetect(grayTempCV);
-
-                if (myPoly != null)
+        private void Kinect_DepthFrameReady(object sender, DepthImageFrameReadyEventArgs e)
+        {
+            using (DepthImageFrame depthFrame = e.OpenDepthImageFrame())
+            {
+                if (depthFrame != null)
                 {
-                    foreach (System.Drawing.Point[] polyLine in myPoly)
-                        CVKinectColorFrame.DrawPolyline(polyLine, true, new Bgr(System.Drawing.Color.Red), 2);
-                }
+                    // determine whether to dispatch a thread with this data
+                    lock (dpLock)
+                    {
+                        // if the thread is not active
+                        if (!dpActive)
+                        {
+                            dpActive = true;
+                            // Copy the pixel data from the image to a temporary array
+                            depthFrame.CopyDepthImagePixelDataTo(depthPixels);
 
-                //##################################################################################################
+                            Thread t = new Thread(() => ProcessDepthData(depthFrame.MinDepth, depthFrame.MaxDepth));
+                            t.Start();
+                        }
+                    }
+                }
+            }
+        }
+
+        void ProcessColorFrame(int bytesPerPixel)
+        {
+            System.Diagnostics.Debug.WriteLine("color frame handler");
+
+            if (colorImageBitmap == null)
+            {
+                this.colorImageBitmap = new WriteableBitmap(
+                    colorFrame.Width,
+                    colorFrame.Height,
+                    96,
+                    96,
+                    PixelFormats.Bgr32,
+                    null);
+                kinectColorImage.Source = colorImageBitmap;
+            }
+
+            this.colorImageBitmap.WritePixels(
+                new Int32Rect(0, 0, sensorChooser.Kinect.ColorStream.FrameWidth, sensorChooser.Kinect.ColorStream.FrameHeight),
+                colorData,
+                sensorChooser.Kinect.ColorStream.FrameWidth * bytesPerPixel, 0
+                );
+            //############################################################################################
+            
+            //The following code demonstrates the conversion of the Kinect Writeable Bitmap to
+            //the Image<,>  format handled by the EMGU OpenCV wrapper.
+
+            System.Drawing.Bitmap ColorBitmap = BitmapSourceConverter.ToBitmap(colorImageBitmap);
+
+            CVKinectColorFrame = BitmapSourceConverter.ToOpenCVImage<Bgr, Byte>(ColorBitmap);
+
+            //Once the image has been converted to a Image<Bgr, Byte> a second temporary Image<Gray, Byte>
+            //is created on which we can run the various filtering and detection algorithms on.
+            Image<Gray, Byte> grayTempCV = CVKinectColorFrame.Convert<Gray, Byte>();
+
+            //Apply Gaussian smoothing with 3x3 kernel and simga = 2.
+            grayTempCV._SmoothGaussian(3, 3, 2, 2);
+
+            //Run canny detection to obtain image edges.
+            grayTempCV = grayTempCV.Canny(150, 25);//(400, 200);
+
+            //The following code demonstrates box, line, and polyLine detection.
+            //Haven't cleaned these functions up yet, currently they accept an Image<Gray, Byte>. Was thinking that depending
+            //on the design maybe we pass an Image<Gray, Byte> as the source, as well as the Image<Bgr, Byte> which would also
+            //act as the return type. That way the drawing of the various detection elements would be done within the function.
+
+            //####################################################################################################
+
+            //Dectect polyLines that form quadralaterals.
+            List<System.Drawing.Point[]> myPoly = polyDetect(grayTempCV);
+
+            if (myPoly != null)
+            {
+                foreach (System.Drawing.Point[] polyLine in myPoly)
+                    CVKinectColorFrame.DrawPolyline(polyLine, true, new Bgr(System.Drawing.Color.Red), 2);
+            }
+
+            //##################################################################################################
 
 // **************************************
 // SNS - 04-14
 // **************************************
 
-                // After we find the polylines' vertices we can do the transformation
-                // need to have this in PointF versus Point. Blahblahblah
- //               System.Diagnostics.Debug.WriteLine("stephanies code");
+            // After we find the polylines' vertices we can do the transformation
+            // need to have this in PointF versus Point. Blahblahblah
+//               System.Diagnostics.Debug.WriteLine("stephanies code");
 
-                if (myPoly != null && myPoly.Count > 0)
+            if (myPoly != null && myPoly.Count > 0)
+            {
+                if (planetracker == null && myPoly.Count >=2)
                 {
-                    if (planetracker == null && myPoly.Count >=2)
+                    Plane plane0 = new Plane();
+                    Plane plane1 = new Plane();
+                    plane0.SetPoints(myPoly[0]);
+                    plane0.SetOverlayImage(overlayImage);
+                    plane1.SetPoints(myPoly[1]);
+                    plane1.SetOverlayImage(overlayImage2);
+
+                    // first frame where we found polygons. initialize the plane tracker
+                    planetracker = new PlaneTracker(new List<Plane> {plane0, plane1});
+                }
+                
+                if (planetracker != null)
+                {
+                    // not the first frame. try to update the values in the plane tracker
+                    System.Diagnostics.Debug.WriteLine("update planes");
+
+                    planetracker.UpdatePlanes(myPoly);
+
+                    // create the overlay using the planes in plane tracker
+                    foreach (Plane plane in planetracker.GetPlanes())
                     {
-                        Plane plane0 = new Plane();
-                        Plane plane1 = new Plane();
-                        plane0.SetPoints(myPoly[0]);
-                        plane0.SetOverlayImage(overlayImage);
-                        plane1.SetPoints(myPoly[1]);
-                        plane1.SetOverlayImage(overlayImage2);
-
-                        // first frame where we found polygons. initialize the plane tracker
-                        planetracker = new PlaneTracker(new List<Plane> {plane0, plane1});
-                    }
-                    
-                    if (planetracker != null)
-                    {
-                        // not the first frame. try to update the values in the plane tracker
-                        System.Diagnostics.Debug.WriteLine("update planes");
-
-                        planetracker.UpdatePlanes(myPoly);
-
-                        // create the overlay using the planes in plane tracker
-                        foreach (Plane plane in planetracker.GetPlanes())
-                        {
-                            createOverlay(plane.GetPoints(), plane.GetOverlayImage());
-                        }
+                        createOverlay(plane.GetPoints(), plane.GetOverlayImage());
                     }
                 }
+            }
+
+            //Once we are finished with the gray temp image it needs to be disposed of. 
+            grayTempCV.Dispose();
 
 
-                //Once we are finished with the gray temp image it needs to be disposed of. 
-                grayTempCV.Dispose();
+            //Following processing of CV image need to convert back to Windows style bitmap.
+            BitmapSource bs = BitmapSourceConverter.ToBitmapSource(CVKinectColorFrame);
+            System.Diagnostics.Debug.WriteLine("conversion done");
+    
 
 
-                //Following processing of CV image need to convert back to Windows style bitmap.
-                BitmapSource bs = BitmapSourceConverter.ToBitmapSource(CVKinectColorFrame);
-                System.Diagnostics.Debug.WriteLine("conversion done");
-        
+            //Dispose of the CV color image following the conversion.
+            CVKinectColorFrame.Dispose();
 
+            int stride = bs.PixelWidth * (bs.Format.BitsPerPixel / 8);
+            byte[] data = new byte[stride * bs.PixelHeight];
+            bs.CopyPixels(data, stride, 0);
+            colorData = data;
 
-                //Dispose of the CV color image following the conversion.
-                CVKinectColorFrame.Dispose();
+            //Write our converted color pixel data to the original Writeable bitmap.
+            this.colorImageBitmap.WritePixels(
+                new Int32Rect(0, 0, sensorChooser.Kinect.ColorStream.FrameWidth, sensorChooser.Kinect.ColorStream.FrameHeight),
+                colorData,
+                sensorChooser.Kinect.ColorStream.FrameWidth * bytesPerPixel, 0
+                );
 
-                int stride = bs.PixelWidth * (bs.Format.BitsPerPixel / 8);
-                byte[] data = new byte[stride * bs.PixelHeight];
-                bs.CopyPixels(data, stride, 0);
-                colorData = data;
-
-                //Write our converted color pixel data to the original Writeable bitmap.
-                this.colorImageBitmap.WritePixels(
-                    new Int32Rect(0, 0, colorFrame.Width, colorFrame.Height),
-                    colorData,
-                    colorFrame.Width * colorFrame.BytesPerPixel, 0
-                    );
+            lock (clrLock)
+            {
+                clrActive = false;
             }
         }
 
+        private void ProcessDepthData(int minDepth, int maxDepth)
+        {
+            // Save this frame in our ring buffer
+            Parallel.For(0, depthPixels.Length, i =>
+            {
+                // Get the depth for this pixel
+                short depth = depthPixels[i].Depth;
+
+                // if we have a full ring buffer, subtract the oldest entry from the running sum
+                if (ready)
+                    depthRunningSum[i] -= depthRingBuffer[ringBufIdx * frameSize + i];
+
+                // save this pixel for this frame, and update the running sum
+                depthRingBuffer[ringBufIdx * frameSize + i] = (depth >= minDepth && depth <= maxDepth) ? depth : (short)0;
+                depthRunningSum[i] += depthRingBuffer[ringBufIdx * frameSize + i];
+            });
+
+            // increment the ring buffer index
+            ringBufIdx = (ringBufIdx + 1) % ringBufferSize;
+
+            // if we have a full ring buffer, enable image processing
+            if (!ready && ringBufIdx == 0)
+                ready = true;
+
+            // perform image processing if we have a full circular buffer
+            if (ready)
+            {
+                double fx = depthImgCV.Rows / (2.0 * Math.Tan(43 / 2));
+                double fy = depthImgCV.Cols / (2.0 * Math.Tan(57 / 2));
+
+                // Convert from pixel space to real world space
+                Parallel.For(0, depthRunningSum.Length, i =>
+                {
+                    float floatVal = depthRunningSum[i] / ringBufferSize;
+
+                    int x = i / sensorChooser.Kinect.DepthStream.FrameWidth;
+                    int y = (sensorChooser.Kinect.DepthStream.FrameWidth - 1) - i % sensorChooser.Kinect.DepthStream.FrameWidth;
+
+                    // Write out blue (x-distance) byte
+                    depthImgCV.Data[x, y, 0] = (float)(floatVal * ((double)x - (depthImgCV.Rows / 2.0 - 1)) / fx);
+
+                    // Write out green (y-distance) byte
+                    depthImgCV.Data[x, y, 1] = (float)(floatVal * ((double)y - (depthImgCV.Cols / 2.0-1)) / fy);
+
+                    // Write out red (z-distance) byte                        
+                    depthImgCV.Data[x, y, 2] = floatVal;
+                });
+
+                // *******************************************
+                //            Start Plane Detection
+                // *******************************************
+
+                // first compute x & y derivatives
+                Parallel.For(0, 2, i =>
+                {
+                    if (i == 0)
+                        dxImgCV = depthImgCV.Sobel(1, 0, depthKernelSize);
+                    else
+                        dyImgCV = depthImgCV.Sobel(0, 1, depthKernelSize);
+                });
+
+                // next, compute the normal vector at each point (excluding the outermost pixels)
+                Parallel.For(0, depthImgCV.Cols * depthImgCV.Rows, i =>
+                {
+                    int x = i / depthImgCV.Cols;
+                    int y = i % depthImgCV.Cols;
+
+                    // compute cross product
+                    depthImgOutCV.Data[x, y, 0] = dyImgCV.Data[x, y, 1] * dxImgCV.Data[x, y, 2] - dyImgCV.Data[x, y, 2] * dxImgCV.Data[x, y, 1];
+                    depthImgOutCV.Data[x, y, 1] = dyImgCV.Data[x, y, 2] * dxImgCV.Data[x, y, 0] - dyImgCV.Data[x, y, 0] * dxImgCV.Data[x, y, 2];
+                    depthImgOutCV.Data[x, y, 2] = dyImgCV.Data[x, y, 0] * dxImgCV.Data[x, y, 1] - dyImgCV.Data[x, y, 1] * dxImgCV.Data[x, y, 0];
+
+                    pixelMag[i] = (float)Math.Sqrt(depthImgOutCV.Data[x, y, 0] * depthImgOutCV.Data[x, y, 0] + depthImgOutCV.Data[x, y, 1] * depthImgOutCV.Data[x, y, 1] + depthImgOutCV.Data[x, y, 2] * depthImgOutCV.Data[x, y, 2]);
+                });
+
+                if (useFloodFill)
+                {
+
+                    int groupId = FastFill();
+
+                    int maxColor = (int)Math.Pow(2, 24);
+
+                    // save the points to the output buffer
+                    Parallel.For(0, depthImgOutCV.Cols * depthImgOutCV.Rows, i =>
+                    {
+                        int x = i / sensorChooser.Kinect.DepthStream.FrameWidth;
+                        int y = i % sensorChooser.Kinect.DepthStream.FrameWidth;
+
+                        int color = maxColor / groupId * (pixelState[i]);
+
+                        if (color < 0 || groupCount[pixelState[i]] < minGroupSize)
+                            color = 0;
+
+                        // Write out blue byte
+                        this.depthRGBPixels[i * 4] = (byte)(color & 0xFF);
+
+                        // Write out green byte
+                        this.depthRGBPixels[i * 4 + 1] = (byte)((color >> 8) & 0xFF);
+
+                        // Write out red byte                        
+                        this.depthRGBPixels[i * 4 + 2] = (byte)((color >> 16) & 0xFF);
+                    });
+                }
+                else if (useEdgeDetect){
+
+                    Parallel.For(0, depthImgCV.Cols * depthImgCV.Rows, i =>
+                    {
+                        int x = i / depthImgCV.Cols;
+                        int y = i % depthImgCV.Cols;
+
+                        if (pixelMag[i] > 1000)
+                        {
+                            depthImgOutCV.Data[x, y, 0] = 255;
+                            depthImgOutCV.Data[x, y, 2] = 255;
+                            depthImgOutCV.Data[x, y, 1] = 255;
+                        }
+                        else
+                        {
+                            depthImgOutCV.Data[x, y, 0] = 0;
+                            depthImgOutCV.Data[x, y, 2] = 0;
+                            depthImgOutCV.Data[x, y, 1] = 0;
+                        }
+                    });
+
+                    //Run canny detection to obtain image edges.
+                    Image<Gray, Byte> grayTempCV = depthImgOutCV.Convert<Gray, Byte>();//.Canny(900, 150);
+
+                    List<System.Drawing.Point[]> myPoly = polyDetect(grayTempCV);
+                    
+                    if (myPoly != null)
+                    {
+                        foreach (System.Drawing.Point[] polyLine in myPoly)
+                            depthImgOutCV.DrawPolyline(polyLine, true, new Bgr(System.Drawing.Color.Red), 2);
+                    }
+
+                    // save the points to the output buffer
+                    Parallel.For(0, depthImgCV.Cols * depthImgCV.Rows, i =>
+                    {
+                        int x = i / sensorChooser.Kinect.DepthStream.FrameWidth;
+                        int y = i % sensorChooser.Kinect.DepthStream.FrameWidth;
+
+                        // Write out blue byte
+                        this.depthRGBPixels[i * 4] = (byte)(short)depthImgOutCV.Data[x, y, 0];
+
+                        // Write out green byte
+                        this.depthRGBPixels[i * 4 + 1] = (byte)(short)depthImgOutCV.Data[x, y, 1];
+
+                        // Write out red byte                        
+                        this.depthRGBPixels[i * 4 + 2] = (byte)(short)depthImgOutCV.Data[x, y, 2];
+                    });
+                }
+                else
+                {
+                    Parallel.For(0, depthImgOutCV.Cols * depthImgOutCV.Rows, i =>
+                    {
+                        int x = i / sensorChooser.Kinect.DepthStream.FrameWidth;
+                        int y = i % sensorChooser.Kinect.DepthStream.FrameWidth;
+
+                        depthImgOutCV.Data[x, y, 0] = (float)((depthImgOutCV.Data[x, y, 0] / pixelMag[i] + 1)*255.0/2.0);
+                        depthImgOutCV.Data[x, y, 1] = (float)((depthImgOutCV.Data[x, y, 1] / pixelMag[i] + 1)*255.0/2.0);
+                        depthImgOutCV.Data[x, y, 2] = (float)((depthImgOutCV.Data[x, y, 2] / pixelMag[i] + 1)*255.0/2.0);
+                    });
+
+                    Image<Gray, Byte> grayImage = depthImgOutCV.Convert<Gray, Byte>();
+
+                    grayImage._SmoothGaussian(3, 3, 2, 2);
+
+                    grayImage = grayImage.Canny(150, 15);
+
+                    List<System.Drawing.Point[]> myPoly = polyDetect(grayImage);
+
+                    if (myPoly != null)
+                    {
+                        foreach (System.Drawing.Point[] polyLine in myPoly)
+                            depthImgOutCV.DrawPolyline(polyLine, true, new Bgr(System.Drawing.Color.Red), 10);
+                    }
+
+                    // save the points to the output buffer
+                    Parallel.For(0, depthImgOutCV.Cols * depthImgOutCV.Rows, i =>
+                    {
+                        int x = i / sensorChooser.Kinect.DepthStream.FrameWidth;
+                        int y = i % sensorChooser.Kinect.DepthStream.FrameWidth;
+
+                        // Write out blue byte
+                        this.depthRGBPixels[i * 4] = (byte)(short)depthImgOutCV.Data[x, y, 0];
+
+                        // Write out green byte
+                        this.depthRGBPixels[i * 4 + 1] = (byte)(short)depthImgOutCV.Data[x, y, 1];
+
+                        // Write out red byte                        
+                        this.depthRGBPixels[i * 4 + 2] = (byte)(short)depthImgOutCV.Data[x, y, 2];
+                    });
+                }
+
+                // Write the pixel data into our bitmap
+                try
+                {
+                    Dispatcher.Invoke((Action)(() =>
+                    {
+                        depthBitmap.WritePixels(
+                            new Int32Rect(0, 0, depthBitmap.PixelWidth, depthBitmap.PixelHeight),
+                            depthRGBPixels,
+                            depthBitmap.PixelWidth * sizeof(int),
+                            0);
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(ex.Message);
+                }
+            }
+
+            lock (dpLock)
+            {
+                dpActive = false;
+            }
+        }
         
+        private int FastFill()
+        {
+            groupCount = new List<int>();
+            groupCount.Add(0); // 0th index represents nothing
+            groupCount.Add(0); // 1st index represents points with magnitude == 0
+
+            Array.Clear(pixelState, 0, pixelState.Length);
+
+            int groupId = 1; // 1 is reserved for 0 magnitude points
+
+            // group the points using flood fill algorithm
+            for (int i = 0; i < depthImgOutCV.Cols * depthImgOutCV.Rows; i++)
+            {
+                int x = i / sensorChooser.Kinect.DepthStream.FrameWidth;
+                int y = i % sensorChooser.Kinect.DepthStream.FrameWidth;
+
+                // if this point is already assigned, skip it
+                if (pixelState[x * sensorChooser.Kinect.DepthStream.FrameWidth + y] > 0)
+                    continue;
+
+                // if magnitude is 0, mark as group 1 and skip
+                if (pixelMag[x * sensorChooser.Kinect.DepthStream.FrameWidth + y] == 0)
+                {
+                    // increment the group counter
+                    groupCount[1]++;
+
+                    // mark this point as belonging to this group with +groupId
+                    pixelState[x * sensorChooser.Kinect.DepthStream.FrameWidth + y] = 1;
+
+                    continue;
+                }
+
+                // make this point the first member of a new group
+                groupId++;
+                groupCount.Add(0);
+
+                // queue to contain potential group members
+                Queue<int[]> pixelQueue = new Queue<int[]>();
+                Object qLock = new Object();
+
+                // enqueue the current point as the first point
+                pixelQueue.Enqueue(new int[2] { x, y });
+
+                // loop until there are no more points in the queue
+                while (pixelQueue.Count > 0)
+                {
+                    // get the current pixel coordinates
+                    int[] pt = pixelQueue.Dequeue();
+
+                    // if the current pixel is already assigned, continue
+                    if (pixelState[pt[0] * sensorChooser.Kinect.DepthStream.FrameWidth + pt[1]] > 0)
+                        continue;
+
+                    // add this pixel to the group
+                    pixelState[pt[0] * sensorChooser.Kinect.DepthStream.FrameWidth + pt[1]] = groupId;
+                    groupCount[groupId]++;
+
+                    // west and east index counters
+                    int w = pt[1];
+                    int e = pt[1];
+
+                    // walk east and west to determine our bounds for this line
+                    Parallel.For(0, 2, j =>
+                    {
+                        // walk west
+                        if (j == 0)
+                        {
+                            while (--w >= 0)
+                            {
+                                int lastIdx = pt[0] * sensorChooser.Kinect.DepthStream.FrameWidth + w + 1;
+                                int curIdx = pt[0] * sensorChooser.Kinect.DepthStream.FrameWidth + w;
+
+                                // if magnitude is 0, mark as group 1 & end scan
+                                if (pixelMag[curIdx] == 0)
+                                {
+                                    // increment the group counter
+                                    lock (qLock)
+                                    {
+                                        groupCount[1]++;
+                                    }
+
+                                    // mark this point as belonging to this group with +groupId
+                                    pixelState[curIdx] = 1;
+
+                                    break;
+                                }
+
+                                float dotProd = depthImgOutCV.Data[pt[0], w, 0] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0], w + 1, 0] / pixelMag[lastIdx] +
+                                                depthImgOutCV.Data[pt[0], w, 1] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0], w + 1, 1] / pixelMag[lastIdx] +
+                                                depthImgOutCV.Data[pt[0], w, 2] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0], w + 1, 2] / pixelMag[lastIdx];
+
+                                // if color matches
+                                if (dotProd > minDotProd && (pixelMag[curIdx] / pixelMag[lastIdx] > (1 - planeFactor) && pixelMag[curIdx] / pixelMag[lastIdx] < (1 + planeFactor)))
+                                {
+                                    // increment the group counter
+                                    lock (qLock)
+                                    {
+                                        groupCount[groupId]++;
+                                    }
+
+                                    // mark this point as belonging to this group with +groupId
+                                    pixelState[curIdx] = groupId;
+
+                                    // if north neighbor is a match, add them to the queue
+                                    if (pt[0] - 1 > 0)
+                                    {
+                                        lastIdx = (pt[0] - 1) * sensorChooser.Kinect.DepthStream.FrameWidth + w;
+                                        dotProd = depthImgOutCV.Data[pt[0], w, 0] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0] - 1, w, 0] / pixelMag[lastIdx] +
+                                                  depthImgOutCV.Data[pt[0], w, 1] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0] - 1, w, 1] / pixelMag[lastIdx] +
+                                                  depthImgOutCV.Data[pt[0], w, 2] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0] - 1, w, 2] / pixelMag[lastIdx];
+
+                                        // if the north point is a match and is unassigned
+                                        if (dotProd > minDotProd && pixelState[lastIdx] == 0 && (pixelMag[curIdx] / pixelMag[lastIdx] > (1 - planeFactor) && pixelMag[curIdx] / pixelMag[lastIdx] < (1 + planeFactor)))
+                                        {
+                                            // add that point to the queue
+                                            lock (qLock)
+                                                pixelQueue.Enqueue(new int[2] { pt[0] - 1, w });
+                                        }
+                                    }
+
+                                    // if south neighbor is a match, add them to the queue
+                                    if (pt[0] + 1 < sensorChooser.Kinect.DepthStream.FrameHeight)
+                                    {
+                                        lastIdx = (pt[0] + 1) * sensorChooser.Kinect.DepthStream.FrameWidth + w;
+                                        dotProd = depthImgOutCV.Data[pt[0], w, 0] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0] + 1, w, 0] / pixelMag[lastIdx] +
+                                                  depthImgOutCV.Data[pt[0], w, 1] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0] + 1, w, 1] / pixelMag[lastIdx] +
+                                                  depthImgOutCV.Data[pt[0], w, 2] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0] + 1, w, 2] / pixelMag[lastIdx];
+
+                                        // if the north point is a match and is unassigned
+                                        if (dotProd > minDotProd && pixelState[lastIdx] == 0 && (pixelMag[curIdx] / pixelMag[lastIdx] > (1 - planeFactor) && pixelMag[curIdx] / pixelMag[lastIdx] < (1 + planeFactor)))
+                                        {
+                                            // add that point to the queue
+                                            lock (qLock)
+                                                pixelQueue.Enqueue(new int[2] { pt[0] + 1, w });
+                                        }
+                                    }
+                                }
+                                // else stop iterating
+                                else
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        // walk east
+                        else
+                        {
+                            while (++e < sensorChooser.Kinect.DepthStream.FrameWidth)
+                            {
+                                int lastIdx = pt[0] * sensorChooser.Kinect.DepthStream.FrameWidth + e - 1;
+                                int curIdx = pt[0] * sensorChooser.Kinect.DepthStream.FrameWidth + e;
+
+                                // if magnitude is 0, mark as group 1 & end scan
+                                if (pixelMag[curIdx] == 0)
+                                {
+                                    // increment the group counter
+                                    lock (qLock)
+                                    {
+                                        groupCount[1]++;
+                                    }
+
+                                    // mark this point as belonging to this group with +groupId
+                                    pixelState[curIdx] = 1;
+
+                                    break;
+                                }
+
+                                float dotProd = depthImgOutCV.Data[pt[0], e, 0] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0], e - 1, 0] / pixelMag[lastIdx] +
+                                                depthImgOutCV.Data[pt[0], e, 1] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0], e - 1, 1] / pixelMag[lastIdx] +
+                                                depthImgOutCV.Data[pt[0], e, 2] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0], e - 1, 2] / pixelMag[lastIdx];
+
+                                // if color matches
+                                if (dotProd > minDotProd && (pixelMag[curIdx] / pixelMag[lastIdx] > (1 - planeFactor) && pixelMag[curIdx] / pixelMag[lastIdx] < (1 + planeFactor)))
+                                {
+                                    // increment the group counter
+                                    lock (qLock)
+                                    {
+                                        groupCount[groupId]++;
+                                    }
+
+                                    // mark this point as belonging to this group with +groupId
+                                    pixelState[curIdx] = groupId;
+
+                                    // if north neighbor is a match, add them to the queue
+                                    if (pt[0] - 1 > 0)
+                                    {
+                                        lastIdx = (pt[0] - 1) * sensorChooser.Kinect.DepthStream.FrameWidth + e;
+                                        dotProd = depthImgOutCV.Data[pt[0], e, 0] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0] - 1, e, 0] / pixelMag[lastIdx] +
+                                                  depthImgOutCV.Data[pt[0], e, 1] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0] - 1, e, 1] / pixelMag[lastIdx] +
+                                                  depthImgOutCV.Data[pt[0], e, 2] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0] - 1, e, 2] / pixelMag[lastIdx];
+
+                                        // if the north point is a match and is unassigned
+                                        if (dotProd > minDotProd && pixelState[lastIdx] == 0 && (pixelMag[curIdx] / pixelMag[lastIdx] > (1 - planeFactor) && pixelMag[curIdx] / pixelMag[lastIdx] < (1 + planeFactor)))
+                                        {
+                                            // add that point to the queue
+                                            lock (qLock)
+                                                pixelQueue.Enqueue(new int[2] { pt[0] - 1, e });
+                                        }
+                                    }
+
+                                    // if south neighbor is a match, add them to the queue
+                                    if (pt[0] + 1 < sensorChooser.Kinect.DepthStream.FrameHeight)
+                                    {
+                                        lastIdx = (pt[0] + 1) * sensorChooser.Kinect.DepthStream.FrameWidth + e;
+                                        dotProd = depthImgOutCV.Data[pt[0], e, 0] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0] + 1, e, 0] / pixelMag[lastIdx] +
+                                                  depthImgOutCV.Data[pt[0], e, 1] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0] + 1, e, 1] / pixelMag[lastIdx] +
+                                                  depthImgOutCV.Data[pt[0], e, 2] / pixelMag[curIdx] * depthImgOutCV.Data[pt[0] + 1, e, 2] / pixelMag[lastIdx];
+
+                                        // if the north point is a match and is unassigned
+                                        if (dotProd > minDotProd && pixelState[lastIdx] == 0 && (pixelMag[curIdx] / pixelMag[lastIdx] > (1 - planeFactor) && pixelMag[curIdx] / pixelMag[lastIdx] < (1 + planeFactor)))
+                                        {
+                                            // add that point to the queue
+                                            lock (qLock)
+                                                pixelQueue.Enqueue(new int[2] { pt[0] + 1, e });
+                                        }
+                                    }
+                                }
+                                // else stop iterating
+                                else
+                                {
+                                    break;
+                                }
+                            }
+                        }
+
+                    });
+                }
+            }
+
+            return groupId;
+        }
+
         public List<MCvBox2D> boxDetect(Image<Gray, Byte> myImage)
         {
             List<MCvBox2D> boxlist = new List<MCvBox2D>();
