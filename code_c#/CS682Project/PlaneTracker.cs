@@ -16,10 +16,13 @@ namespace CS682Project
     class PlaneTracker
     {
         private List<Plane> planes;
+        private int imageCounter = 0;
+        private int maxImages = 0;
 
         // assume the user has associated images with identified planes in the gui. we send these to the tracker constructor.
-        public PlaneTracker(List<Plane> planes) {
+        public PlaneTracker(List<Plane> planes, int maxImages) {
             this.planes = planes;
+            this.maxImages = maxImages;
         }
 
         public List<Plane> GetPlanes() {
@@ -96,11 +99,18 @@ namespace CS682Project
                 } // end of polys loop
 
                  // when a potential plane/poly match is made, we track it. bestPolyIndex, List[(planeIndex, bestDistance)]
-                if (!matches.ContainsKey(bestIndex)) {
-                    // add the bestIndex key to matches
-                    matches.Add(bestIndex, new List<Tuple<int, double>>());
+                System.Diagnostics.Debug.WriteLine("best index: " + bestIndex);
+
+                if (bestIndex != -1)
+                {
+                    if (!matches.ContainsKey(bestIndex))
+                    {
+                        // add the bestIndex key to matches
+                        matches.Add(bestIndex, new List<Tuple<int, double>>());
+                    }
+                    matches[bestIndex].Add(Tuple.Create<int, double>(i, bestDistance));
                 }
-                matches[bestIndex].Add(Tuple.Create<int, double>(i, bestDistance));
+
             } // end of planes for loop
 
             // now we need to check the dictionary to find if any polys get associated with multiple planes
@@ -110,8 +120,12 @@ namespace CS682Project
                 List<Tuple<int, double>> candidates = entry.Value;
 
                 // case 1. only one plane matched this polygon
-                if (candidates.Count == 1) {
-                 
+                if (candidates.Count == 1)
+                {
+                    System.Diagnostics.Debug.WriteLine("plane/poly check");
+                    System.Diagnostics.Debug.WriteLine(this.planes.Count);
+                  
+
                     // check if the polygon's centroid is inside or incident to the plane. if it is consider it a match
                     if (pointPolygonTest(this.planes.ElementAt(candidates[0].Item1).GetPoints(), polyCentroids[polyIndex]) > -1)
                     {
@@ -122,50 +136,68 @@ namespace CS682Project
                     else
                     {
                         this.planes.ElementAt(candidates[0].Item1).SetDeathClock(this.planes.ElementAt(candidates[0].Item1).GetDeathClock() + 1);
-                    }      
-                }
-                // case 2. multiple things in the list. find smallest distance match.
-                else {
-                    int smallestDistanceIndex = 0;
-
-                    // find the smallest distance of the candidates
-                    for (int i = 0; i < candidates.Count; i++)
-                    {
-                        double smallestDistance = candidates[smallestDistanceIndex].Item2;
-                        double currentDistance = candidates[i].Item2;
-
-                        if (currentDistance <= smallestDistance) {
-                            smallestDistanceIndex = i;
-                        }
                     }
-
-                    // given the smallest distance, update the plane that it goes with and increment deathclock for the rest of planes
-                    for (int i = 0; i < candidates.Count; i++)
+                }
+                    // case 2. multiple things in the list. find smallest distance match.
+                    else
                     {
-                        int planeIndex = candidates[i].Item1;
+                        int smallestDistanceIndex = 0;
 
-                        // set the smallest distance polygon
-                        if (i == smallestDistanceIndex) {
+                        // find the smallest distance of the candidates
+                        for (int i = 0; i < candidates.Count; i++)
+                        {
+                            double smallestDistance = candidates[smallestDistanceIndex].Item2;
+                            double currentDistance = candidates[i].Item2;
 
-                            // check if the polygon's centroid is inside or incident to the plane. if it is consider it a match
-                            if (pointPolygonTest(this.planes.ElementAt(planeIndex).GetPoints(), polyCentroids[polyIndex]) > -1)
+                            if (currentDistance <= smallestDistance)
                             {
-                                this.planes.ElementAt(planeIndex).SetPoints(polys.ElementAt(polyIndex));
-                                this.planes.ElementAt(planeIndex).SetDeathClock(0);
+                                smallestDistanceIndex = i;
                             }
-                            // otherwise we won't use as a match. increment the death clock and keep current set of points for this plane.
+                        }
+
+                        // given the smallest distance, update the plane that it goes with and increment deathclock for the rest of planes
+                        for (int i = 0; i < candidates.Count; i++)
+                        {
+                            int planeIndex = candidates[i].Item1;
+
+                            // set the smallest distance polygon
+                            if (i == smallestDistanceIndex)
+                            {
+
+                                // check if the polygon's centroid is inside or incident to the plane. if it is consider it a match
+                                if (pointPolygonTest(this.planes.ElementAt(planeIndex).GetPoints(), polyCentroids[polyIndex]) > -1)
+                                {
+                                    this.planes.ElementAt(planeIndex).SetPoints(polys.ElementAt(polyIndex));
+                                    this.planes.ElementAt(planeIndex).SetDeathClock(0);
+                                }
+                                // otherwise we won't use as a match. increment the death clock and keep current set of points for this plane.
+                                else
+                                {
+                                    this.planes.ElementAt(candidates[0].Item1).SetDeathClock(this.planes.ElementAt(candidates[0].Item1).GetDeathClock() + 1);
+                                }
+                            }
+                            // otherwise, there was a polygon closer than this one. increment the death clock and keep current set of points for the plane
                             else
                             {
-                                this.planes.ElementAt(candidates[0].Item1).SetDeathClock(this.planes.ElementAt(candidates[0].Item1).GetDeathClock() + 1);
+                                this.planes.ElementAt(planeIndex).SetDeathClock(this.planes.ElementAt(planeIndex).GetDeathClock() + 1);
                             }
                         }
-                        // otherwise, there was a polygon closer than this one. increment the death clock and keep current set of points for the plane
-                        else {
-                            this.planes.ElementAt(planeIndex).SetDeathClock(this.planes.ElementAt(planeIndex).GetDeathClock() + 1);
-                        }
-                    }
-                } // end of multiple matches else
-            } // end of dictionary check
+                    } // end of multiple matches else
+                } // end of dictionary check
+
+            // for any polygons in the current frame that do not match a plane, start tracking them 
+            for (int i = 0; i < polys.Count; i++)
+            {
+                // no potential match.  Add to the plane list for tracking if we have images available.
+                if (!matches.ContainsKey(i) && (imageCounter < maxImages))
+                {
+                    Plane newPlane = new Plane();
+                    newPlane.SetPoints(polys[i]);
+                    newPlane.SetOverlayImageIndex(imageCounter);
+                    this.planes.Add(newPlane);
+                    imageCounter++;
+                }
+            }
         }
 
         /// <summary>
