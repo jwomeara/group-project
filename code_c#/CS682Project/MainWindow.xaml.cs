@@ -101,11 +101,13 @@ namespace CS682Project
         // SNS - 04-14
         // *************
 
+        private const int MAX_IMAGES = 20;
+
         // Plane Tracker to track planes from frame to frame
         static PlaneTracker planetracker = null;
 
         // read in an overlay image
-        Image<Bgr, Byte>[] overlayImages = new Image<Bgr, Byte>[2];
+        Image<Bgr, Byte>[] overlayImageArray = new Image<Bgr, Byte>[2];
 
         static Image<Bgr, Byte> overlayImage = new Image<Bgr, Byte>(@"C:\Users\wayne\Desktop\ComputerVision\Shapes.jpg");
         static Image<Bgr, Byte> overlayImage2 = new Image<Bgr, Byte>(@"C:\Users\wayne\Desktop\ComputerVision\Shapes1.jpg");
@@ -175,14 +177,14 @@ namespace CS682Project
 
             pixelMag = new float[sensorChooser.Kinect.DepthStream.FrameWidth * sensorChooser.Kinect.DepthStream.FrameHeight];
             pixelState = new int[sensorChooser.Kinect.DepthStream.FrameWidth * sensorChooser.Kinect.DepthStream.FrameHeight];
+            
+            // initialize array of overlay images
+            overlayImageArray[0] = overlayImage;
+            overlayImageArray[1] = overlayImage2;
 
             // initialize PlaneTracker object and list of planes to track
-            overlayImages[0] = overlayImage;
-            overlayImages[1] = overlayImage2;
-
             List<Plane> planeList = new List<Plane>();
-            planetracker = new PlaneTracker(planeList);
-
+            planetracker = new PlaneTracker(planeList, MAX_IMAGES);
 
         }
 
@@ -314,39 +316,18 @@ namespace CS682Project
             // need to have this in PointF versus Point. Blahblahblah
             // System.Diagnostics.Debug.WriteLine("stephanies code");
 
-            if (myPoly != null && myPoly.Count > 0)
-            {
-                if (planetracker == null && myPoly.Count >= 2)
-                {
-                    Plane plane0 = new Plane();
-                    Plane plane1 = new Plane();
-                    plane0.SetPoints(myPoly[0]);
-                    plane0.SetOverlayImage(overlayImage);
-                    plane1.SetPoints(myPoly[1]);
-                    plane1.SetOverlayImage(overlayImage2);
+            System.Diagnostics.Debug.WriteLine("update planes");
 
-                    // first frame where we found polygons. initialize the plane tracker
-                    planetracker = new PlaneTracker(new List<Plane> { plane0, plane1 });
-                }
-
-                if (planetracker != null)
-                {
-                    // not the first frame. try to update the values in the plane tracker
-                    System.Diagnostics.Debug.WriteLine("update planes");
-
-                    planetracker.UpdatePlanes(myPoly);
+            planetracker.UpdatePlanes(myPoly);
 
                     // create the overlay using the planes in plane tracker
-                    foreach (Plane plane in planetracker.GetPlanes())
-                    {
-                        createOverlay(plane.GetPoints(), plane.GetOverlayImage());
-                    }
-                }
+            foreach (Plane plane in planetracker.GetPlanes())
+            {
+                createOverlay(plane.GetPoints(), overlayImageArray[plane.GetOverlayImageIndex()]);
             }
-
+                           
             //Once we are finished with the gray temp image it needs to be disposed of.
             grayTempCV.Dispose();
-
 
             // Convert from pixel space to real world space
             Parallel.For(0, sensorChooser.Kinect.ColorStream.FrameWidth * sensorChooser.Kinect.ColorStream.FrameHeight, i =>
