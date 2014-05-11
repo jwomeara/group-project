@@ -104,7 +104,7 @@ namespace CS682Project
         static PlaneTracker planetracker = null;
 
         // read in an overlay image
-        private const int MAX_IMAGES = 20;
+        private const int MAX_IMAGES = 5;
 
         Image<Bgr, Byte>[] overlayImageArray = new Image<Bgr, Byte>[2];
 

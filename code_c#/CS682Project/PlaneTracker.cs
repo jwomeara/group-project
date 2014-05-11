@@ -17,7 +17,7 @@ namespace CS682Project
     {
         private List<Plane> planes;
         private int imageCounter = 0;
-        private int maxImages = 0;
+        private int maxImages = 20;
        
 
         // assume the user has associated images with identified planes in the gui. we send these to the tracker constructor.
@@ -38,7 +38,7 @@ namespace CS682Project
         public void UpdatePlanes(List<System.Drawing.Point[]> polys) {
 
             List<Plane> trackedPlanes = new List<Plane>();
-            int deathCount = 30;
+            int deathCount = 10;
 
             // check if the plane has reached its time limit of not having a matching polygon over n frames. if so, remove.
             foreach (Plane plane in this.planes)
@@ -143,13 +143,13 @@ namespace CS682Project
 
                 if (bestIndex != -1) {
                     Plane previousMatchPlane = matches[bestIndex];
-                
+                    System.Drawing.PointF polyCentroid = calculateCentroid(polygons[bestIndex]);
+                    
                     // this polygon has already been chosen by a plane as a potential match
                     if (previousMatchPlane != null)
                     {
                         //compare the distance
                         System.Drawing.PointF previousCentroid = calculateCentroid(previousMatchPlane.GetPoints());
-                        System.Drawing.PointF polyCentroid = calculateCentroid(polygons[bestIndex]);
                         double previousDistance = calculateEuclideanDistance(previousCentroid, polyCentroid);
                         
                         // if bestDistance is now better update the plane that goes with the polygon
@@ -160,7 +160,12 @@ namespace CS682Project
                     }
                     else
                     {
-                        matches[bestIndex] = this.planes.ElementAt(i);
+                        // check if the matched centroid is within in the plane's bounding polygon (so it is relatively close)
+                        if (pointPolygonTest(this.planes.ElementAt(i).GetPoints(), polyCentroid) != -1)
+                        {
+                            matches[bestIndex] = this.planes.ElementAt(i);
+                        }
+                      
                     }
                 }
             }
