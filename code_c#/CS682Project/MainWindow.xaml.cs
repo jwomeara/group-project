@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -96,17 +96,16 @@ namespace CS682Project
 
         private byte[] colorRGBData;
 
-
         // *************
         // SNS - 04-14
         // *************
-
-        private const int MAX_IMAGES = 20;
 
         // Plane Tracker to track planes from frame to frame
         static PlaneTracker planetracker = null;
 
         // read in an overlay image
+        private const int MAX_IMAGES = 20;
+
         Image<Bgr, Byte>[] overlayImageArray = new Image<Bgr, Byte>[2];
 
         static Image<Bgr, Byte> overlayImage = new Image<Bgr, Byte>(@"C:\Users\wayne\Desktop\ComputerVision\Shapes.jpg");
@@ -320,10 +319,10 @@ namespace CS682Project
 
             planetracker.UpdatePlanes(myPoly);
 
-                    // create the overlay using the planes in plane tracker
+            // create the overlay using the planes in plane tracker
             foreach (Plane plane in planetracker.GetPlanes())
             {
-                createOverlay(plane.GetPoints(), overlayImageArray[plane.GetOverlayImageIndex()]);
+                createOverlay(plane.GetPoints(), overlayImageArray[plane.GetOverlayImageIndex() % 2]);
             }
                            
             //Once we are finished with the gray temp image it needs to be disposed of.
@@ -891,9 +890,15 @@ namespace CS682Project
                     //Check to see if the contour forms a enclosed quadralateral with a desired minimum area.
                     if (Math.Abs(currentContour.Area) > 500 && currentContour.Convex == true && currentContour.Total == 4)//
                     {
-                        bool isRectangle = true;
+                        System.Diagnostics.Debug.WriteLine("current contour area " + currentContour.Area);
+                      
                         System.Drawing.Point[] pts = currentContour.ToArray();
-                        mypts.Add(pts);
+
+                        System.Diagnostics.Debug.WriteLine(pts[0] + " " + pts[1] + " " + pts[2] + " " + pts[3]);
+
+                        if (!isSelfIntersecting(pts)) {
+                            mypts.Add(pts);
+                        }
                     }
                 }
 
@@ -933,7 +938,9 @@ namespace CS682Project
      
             // copy the correctd overlay onto the kinect image using the mask
             correctedOverlay.Copy(CVKinectColorFrame, mask.Convert<Gray, Byte>());
-     
+
+            CVKinectColorFrame.DrawPolyline(myPoly, true, new Bgr(System.Drawing.Color.Red), 2);
+
             mask.Dispose();
             whiteOverlay.Dispose();
             // correctedOverlay.Dispose();
@@ -976,6 +983,77 @@ namespace CS682Project
             }
             return sortedList;
         }
+
+        public Boolean isSelfIntersecting(System.Drawing.Point[] polygon)
+        {
+            // return true if actual convex poly
+            // note that the OpenCV convex function is undefined for self-intersecting vertices
+
+            // don't care about line segments that share an endpoint (they are going to touch and can't intersect)
+            // check if segment 1-2 and segment 3-4 intersect
+            double slope12;
+            double slope34;
+            double b12;
+            double b34;
+            double x;
+
+            
+            // case where line 1 is vertical
+            if (polygon[1].X - polygon[0].X == 0)
+            {
+                // equation is x = X
+                x = polygon[1].X;
+
+                // case where line 2 is vertical
+                if (polygon[3].X - polygon[2].X == 0)
+                {
+                    // can't intersect
+                    return false;
+                }
+                else
+                {
+                    // if this x falls in the range of the other line, return true
+                    if ((x > polygon[2].X && x < polygon[3].X) || (x < polygon[2].X && x > polygon[3].X))
+                    {
+                        return true;
+                    }
+
+                }
+            }
+            else if (polygon[3].X - polygon[2].X == 0)
+            {
+                // equation is x = X
+                x = polygon[3].X;
+
+                // if the first line falls in the range of this one return true
+                if ((x > polygon[0].X && x < polygon[1].X) || (x < polygon[0].X && x > polygon[1].X))
+                {
+                    return true;
+                }
+            }
+            else
+            {
+                slope12 = (polygon[1].Y - polygon[0].Y) / (polygon[1].X - polygon[0].X);
+                slope34 = (polygon[3].Y - polygon[2].Y) / (polygon[3].X - polygon[2].X);
+
+                b12 = polygon[0].Y - slope12 * polygon[0].X;
+                b34 = polygon[2].Y - slope34 * polygon[2].X;
+
+                // if they intersect, find the x coord
+                if (slope12 != slope34)
+                {
+                    x = (b34 - b12) / (slope12 - slope34);
+
+                    // check if x coord in range of both lines
+                    if ((x > polygon[0].X && x < polygon[1].X) || (x < polygon[0].X && x > polygon[1].X))
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
 
         //Kinect sensor chooser. Honestly its really only impacts the skeleton tracking settings for the most part, as
         //the depth and color frame data and settings are handled same for Xbox and Windows based sensors.
