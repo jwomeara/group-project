@@ -18,6 +18,7 @@ namespace CS682Project
         private List<Plane> planes;
         private int imageCounter = 0;
         private int maxImages = 0;
+       
 
         // assume the user has associated images with identified planes in the gui. we send these to the tracker constructor.
         public PlaneTracker(List<Plane> planes, int maxImages) {
@@ -35,25 +36,11 @@ namespace CS682Project
         /// </summary>
         /// <param name="polys">polygons detected in the current frame</param>
         public void UpdatePlanes(List<System.Drawing.Point[]> polys) {
-           // track best matches as we go through as <polyIndex, List<planeIndex, distance>>
-            Dictionary<int, List<Tuple<int, double>>> matches = new Dictionary<int, List<Tuple<int, double>>>();
 
             List<Plane> trackedPlanes = new List<Plane>();
-
-            // if we don't find a match after this many frames, remove the plane
             int deathCount = 30;
 
-            // calculate all the centroids for the polygons in the current frame
-            List<System.Drawing.PointF> polyCentroids = new List<System.Drawing.PointF>();
-            
-            for (int i = 0; i < polys.Count; i++)
-            {
-                System.Drawing.PointF polyCentroid = new System.Drawing.Point();
-                polyCentroid = calculateCentroid(polys.ElementAt(i));
-                polyCentroids.Add(polyCentroid);
-            }
-
-            // check if the plane has reached its limit of not having a matching polygon. if so, remove it
+            // check if the plane has reached its time limit of not having a matching polygon over n frames. if so, remove.
             foreach (Plane plane in this.planes)
             {
                 if (plane.GetDeathClock() < deathCount)
@@ -64,140 +51,151 @@ namespace CS682Project
 
             this.planes = trackedPlanes;
 
-            // compare each plane being tracked to each of the polygons in the current frame
+            // figure out which polygons match planes currently in plane tracker
+            Dictionary<int, Plane> matches = MapPolygonsToPlanes(polys);
+
+            // if a polygon matches a plane, update the plane.
+            foreach (KeyValuePair<int, Plane> entry in matches)
+            {
+                // poly is new. add it to the plane list
+                if (entry.Value == null) {
+                    AddPlane(polys[entry.Key]);
+                }
+                // polygon has plane match. update the corresponding plane    
+                else
+                {
+                    entry.Value.SetPoints(polys[entry.Key]);
+                    entry.Value.SetDeathClock(0);
+                }
+            }
+
+            // if no polygon matches a plane, increment the death counter of the plane
+            foreach (Plane plane in this.planes) {
+                if (!matches.ContainsValue(plane)) {
+                    plane.SetDeathClock(plane.GetDeathClock() + 1);
+                }
+
+            }
+        }
+
+        /// <summary>
+        /// Add a polygon to the plane tracker's list of planes to track
+        /// Give this new plane coordinates and an image
+        /// Increment the image counter
+        /// </summary>
+        /// <param name="polygon"></param>
+        private void AddPlane(System.Drawing.Point[] polygon)
+        {
+            Plane newPlane = new Plane();
+            newPlane.SetPoints(polygon);
+            newPlane.SetOverlayImageIndex(imageCounter);
+            this.planes.Add(newPlane);
+            imageCounter++;
+        }
+
+        /// <summary>
+        /// create a dictionary of polygon/plane pairs for each frame.
+        /// for the current frame, for each polygon, find the closest matching plane.
+        /// </summary>
+        /// <param name="polygons"></param>
+        /// <returns></returns>
+        private Dictionary<int, Plane> MapPolygonsToPlanes(List<System.Drawing.Point[]> polygons) {
+
+            Dictionary<int, Plane> matches = new Dictionary<int, Plane>();
+
+            // make a dictionary of current frame polygons
+            for (int i = 0; i < polygons.Count; i++)
+            {
+                matches.Add(i, null);
+            }
+
+            // loop through the planes
             for (int i = 0; i < this.planes.Count; i++)
             {
-                double bestDistance = -1;
-                int bestIndex = -1;
-                System.Drawing.PointF bestCentroid;
-
-                // 1. calculate centroid of the plane
+                // calculate centroid of the plane
                 System.Drawing.PointF planeCentroid = calculateCentroid(this.planes.ElementAt(i).GetPoints());
 
-                // compare to each of the polygons in the current frame
-                for (int j = 0; j < polys.Count; j++)
-                {
-                    //2. calculate euclidean distance between poly and plane centroids
-                    double distance = Math.Sqrt(
-                        Math.Pow((planeCentroid.X - polyCentroids[j].X), 2) + 
-                        Math.Pow((planeCentroid.Y - polyCentroids[j].Y), 2)
-                        );
+                // calculate the distance between the plane and centroid
+                double bestDistance = -1;
+                int bestIndex = -1;
 
-                    if (bestDistance == -1) {
+                // loop through the polygons
+                for (int j = 0; j < polygons.Count; j++)
+                {
+                    System.Drawing.PointF polyCentroid = calculateCentroid(polygons[j]);
+
+                    double distance = calculateEuclideanDistance(planeCentroid, polyCentroid);
+
+                    if (bestDistance == -1)
+                    {
                         bestDistance = distance;
                         bestIndex = j;
-                        bestCentroid = polyCentroids[j];
                     }
-                    else {
+                    else
+                    {
                         if (distance < bestDistance)
                         {
                             bestDistance = distance;
                             bestIndex = j;
-                            bestCentroid = polyCentroids[j];
                         }
                     }
-                } // end of polys loop
-
-                 // when a potential plane/poly match is made, we track it. bestPolyIndex, List[(planeIndex, bestDistance)]
-                System.Diagnostics.Debug.WriteLine("best index: " + bestIndex);
-
-                if (bestIndex != -1)
-                {
-                    if (!matches.ContainsKey(bestIndex))
-                    {
-                        // add the bestIndex key to matches
-                        matches.Add(bestIndex, new List<Tuple<int, double>>());
-                    }
-                    matches[bestIndex].Add(Tuple.Create<int, double>(i, bestDistance));
                 }
 
-            } // end of planes for loop
-
-            // now we need to check the dictionary to find if any polys get associated with multiple planes
-            foreach (KeyValuePair<int, List<Tuple<int, double>>> entry in matches)
-            {
-                int polyIndex = entry.Key;
-                List<Tuple<int, double>> candidates = entry.Value;
-
-                // case 1. only one plane matched this polygon
-                if (candidates.Count == 1)
-                {
-                    System.Diagnostics.Debug.WriteLine("plane/poly check");
-                    System.Diagnostics.Debug.WriteLine(this.planes.Count);
-                  
-
-                    // check if the polygon's centroid is inside or incident to the plane. if it is consider it a match
-                    if (pointPolygonTest(this.planes.ElementAt(candidates[0].Item1).GetPoints(), polyCentroids[polyIndex]) > -1)
+                if (bestIndex != -1) {
+                    Plane previousMatchPlane = matches[bestIndex];
+                
+                    // this polygon has already been chosen by a plane as a potential match
+                    if (previousMatchPlane != null)
                     {
-                        this.planes.ElementAt(candidates[0].Item1).SetPoints(polys.ElementAt(polyIndex));
-                        this.planes.ElementAt(candidates[0].Item1).SetDeathClock(0);
+                        //compare the distance
+                        System.Drawing.PointF previousCentroid = calculateCentroid(previousMatchPlane.GetPoints());
+                        System.Drawing.PointF polyCentroid = calculateCentroid(polygons[bestIndex]);
+                        double previousDistance = calculateEuclideanDistance(previousCentroid, polyCentroid);
+                        
+                        // if bestDistance is now better update the plane that goes with the polygon
+                        if (bestDistance < previousDistance)
+                        {
+                            matches[bestIndex] = this.planes.ElementAt(i);
+                        }
                     }
-                    // otherwise we won't use as a match. increment the death clock and keep current set of points for this plane.
                     else
                     {
-                        this.planes.ElementAt(candidates[0].Item1).SetDeathClock(this.planes.ElementAt(candidates[0].Item1).GetDeathClock() + 1);
+                        matches[bestIndex] = this.planes.ElementAt(i);
                     }
-                }
-                    // case 2. multiple things in the list. find smallest distance match.
-                    else
-                    {
-                        int smallestDistanceIndex = 0;
-
-                        // find the smallest distance of the candidates
-                        for (int i = 0; i < candidates.Count; i++)
-                        {
-                            double smallestDistance = candidates[smallestDistanceIndex].Item2;
-                            double currentDistance = candidates[i].Item2;
-
-                            if (currentDistance <= smallestDistance)
-                            {
-                                smallestDistanceIndex = i;
-                            }
-                        }
-
-                        // given the smallest distance, update the plane that it goes with and increment deathclock for the rest of planes
-                        for (int i = 0; i < candidates.Count; i++)
-                        {
-                            int planeIndex = candidates[i].Item1;
-
-                            // set the smallest distance polygon
-                            if (i == smallestDistanceIndex)
-                            {
-
-                                // check if the polygon's centroid is inside or incident to the plane. if it is consider it a match
-                                if (pointPolygonTest(this.planes.ElementAt(planeIndex).GetPoints(), polyCentroids[polyIndex]) > -1)
-                                {
-                                    this.planes.ElementAt(planeIndex).SetPoints(polys.ElementAt(polyIndex));
-                                    this.planes.ElementAt(planeIndex).SetDeathClock(0);
-                                }
-                                // otherwise we won't use as a match. increment the death clock and keep current set of points for this plane.
-                                else
-                                {
-                                    this.planes.ElementAt(candidates[0].Item1).SetDeathClock(this.planes.ElementAt(candidates[0].Item1).GetDeathClock() + 1);
-                                }
-                            }
-                            // otherwise, there was a polygon closer than this one. increment the death clock and keep current set of points for the plane
-                            else
-                            {
-                                this.planes.ElementAt(planeIndex).SetDeathClock(this.planes.ElementAt(planeIndex).GetDeathClock() + 1);
-                            }
-                        }
-                    } // end of multiple matches else
-                } // end of dictionary check
-
-            // for any polygons in the current frame that do not match a plane, start tracking them 
-            for (int i = 0; i < polys.Count; i++)
-            {
-                // no potential match.  Add to the plane list for tracking if we have images available.
-                if (!matches.ContainsKey(i) && (imageCounter < maxImages))
-                {
-                    Plane newPlane = new Plane();
-                    newPlane.SetPoints(polys[i]);
-                    newPlane.SetOverlayImageIndex(imageCounter);
-                    this.planes.Add(newPlane);
-                    imageCounter++;
                 }
             }
+            return matches;
+        }
+
+
+        /// <summary>
+        /// Return a key given a value in 1:1 dictionary. -1 if no match
+        /// </summary>
+        /// <param name="plane"></param>
+        /// <returns></returns>
+        private int GetKeyByValue(Dictionary<int, Plane> dictionary, Plane plane)
+        {
+            foreach (KeyValuePair<int, Plane> entry in dictionary)
+            {
+                if (entry.Value == plane)
+                {
+                    return entry.Key;
+                }
+            }
+            return -1;
+        }
+
+        /// <summary>
+        /// calculateEuclideanDistance finds eucl distance between two points
+        /// </summary>
+        /// <param name="point1"></param>
+        /// <param name="point2"></param>
+        /// <returns></returns>
+        private double calculateEuclideanDistance(System.Drawing.PointF point1, System.Drawing.PointF point2)
+        {
+            double distance = Math.Sqrt(
+                Math.Pow((point1.X - point2.X), 2) + Math.Pow((point1.Y - point2.Y), 2));
+            return distance;
         }
 
         /// <summary>
