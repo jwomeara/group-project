@@ -35,6 +35,19 @@ namespace CS682Project
     /// </summary>
     public partial class MainWindow : Window
     {
+
+        private const int ringBufferSize = 1;
+        private const int depthKernelSize = 1; //11
+        private const double minDotProd = 0.8; //.99
+        private const bool useFloodFill = false;
+        private const bool useEdgeDetect = true;
+        private const bool useCustom = true;
+        private const bool displayNormals = false;
+        private const int minGroupSize = 300;
+        private const int depthCannyThresh = 170;
+        private const int depthCannyThreshLinking = 75;
+
+
         private KinectSensorChooser sensorChooser;
 
         WriteableBitmap depthImageBitmap = null;
@@ -68,14 +81,6 @@ namespace CS682Project
         private Object clrLock = new Object();
 
         // Whitney's additions
-        private const int ringBufferSize = 1;
-        private const int depthKernelSize = 1; //11
-        private const double minDotProd = 0.82; //.99
-        private const bool useFloodFill = false;
-        private const bool useEdgeDetect = false;
-        private const bool useCustom = true;
-        private const int minGroupSize = 1500;
-
         private DepthImagePixel[] depthPixels;
         private WriteableBitmap depthBitmap = null;
 
@@ -90,6 +95,7 @@ namespace CS682Project
         private Image<Bgr, Single> dxImgCV;
         private Image<Bgr, Single> dyImgCV;
         private Image<Bgr, Single> depthImgOutCV;
+        private Image<Bgr, Single> depthEdgesCV;
         private float[] pixelMag;
         private int[] pixelState;
         private List<int> groupCount;
@@ -114,9 +120,10 @@ namespace CS682Project
         // make the overlay's "poly" which is just the corners of the image
         System.Drawing.PointF[] overlayPoly =
                     { new System.Drawing.Point(0, 0),
-                        new System.Drawing.Point(overlayImage.Size.Width, 0),
-                        new System.Drawing.Point(overlayImage.Size.Width, overlayImage.Size.Height),
-                        new System.Drawing.Point(0, overlayImage.Size.Height) };
+                      new System.Drawing.Point(overlayImage.Size.Width, 0),
+                      new System.Drawing.Point(overlayImage.Size.Width, overlayImage.Size.Height),
+                      new System.Drawing.Point(0, overlayImage.Size.Height) };
+
         // *************
         // SNS - 04-14
         // *************
@@ -172,6 +179,7 @@ namespace CS682Project
             dxImgCV = new Image<Bgr, Single>(sensorChooser.Kinect.DepthStream.FrameWidth, sensorChooser.Kinect.DepthStream.FrameHeight);
             dyImgCV = new Image<Bgr, Single>(sensorChooser.Kinect.DepthStream.FrameWidth, sensorChooser.Kinect.DepthStream.FrameHeight);
             depthImgOutCV = new Image<Bgr, Single>(sensorChooser.Kinect.DepthStream.FrameWidth, sensorChooser.Kinect.DepthStream.FrameHeight);
+            depthEdgesCV = new Image<Bgr, Single>(sensorChooser.Kinect.DepthStream.FrameWidth, sensorChooser.Kinect.DepthStream.FrameHeight);
             CVKinectColorFrame = new Image<Bgr, Byte>(sensorChooser.Kinect.ColorStream.FrameWidth, sensorChooser.Kinect.ColorStream.FrameHeight);
 
             pixelMag = new float[sensorChooser.Kinect.DepthStream.FrameWidth * sensorChooser.Kinect.DepthStream.FrameHeight];
@@ -256,8 +264,6 @@ namespace CS682Project
         {
             System.Diagnostics.Debug.WriteLine("color frame handler");
 
-         
-            // Convert from pixel space to real world space
             Parallel.For(0, sensorChooser.Kinect.ColorStream.FrameWidth * sensorChooser.Kinect.ColorStream.FrameHeight, i =>
             {
                 int x = i / sensorChooser.Kinect.ColorStream.FrameWidth;
@@ -470,111 +476,122 @@ namespace CS682Project
                         this.depthRGBPixels[i * 4 + 2] = (byte)((color >> 16) & 0xFF);
                     });
                 }
-                else if (useEdgeDetect)
+                else
                 {
 
-                    Parallel.For(0, depthImgCV.Cols * depthImgCV.Rows, i =>
-                    {
-                        int x = i / depthImgCV.Cols;
-                        int y = i % depthImgCV.Cols;
+                    Image<Gray, Byte> grayTempCV = null;
+                    List<System.Drawing.Point[]> myPoly = null;
 
-                        if (useCustom)
+                    if (useEdgeDetect)
+                    {
+
+                        Parallel.For(0, depthImgCV.Cols * depthImgCV.Rows, i =>
                         {
-                            if (pixelMag[i] > 1000)
+                            int x = i / depthImgCV.Cols;
+                            int y = i % depthImgCV.Cols;
+
+                            if (useCustom)
                             {
-                                depthImgOutCV.Data[x, y, 0] = 255;
-                                depthImgOutCV.Data[x, y, 1] = 255;
-                                depthImgOutCV.Data[x, y, 2] = 255;
+                                if (pixelMag[i] > 1000)
+                                {
+                                    depthEdgesCV.Data[x, y, 0] = 255;
+                                    depthEdgesCV.Data[x, y, 1] = 255;
+                                    depthEdgesCV.Data[x, y, 2] = 255;
+                                }
+                                else
+                                {
+                                    depthEdgesCV.Data[x, y, 0] = 0;
+                                    depthEdgesCV.Data[x, y, 1] = 0;
+                                    depthEdgesCV.Data[x, y, 2] = 0;
+                                }
                             }
                             else
                             {
-                                depthImgOutCV.Data[x, y, 0] = 0;
-                                depthImgOutCV.Data[x, y, 1] = 0;
-                                depthImgOutCV.Data[x, y, 2] = 0;
+                                depthEdgesCV.Data[x, y, 0] = (float)((depthImgOutCV.Data[x, y, 0] / pixelMag[i] + 1) * 255.0 / 2.0);
+                                depthEdgesCV.Data[x, y, 1] = (float)((depthImgOutCV.Data[x, y, 2] / pixelMag[i] + 1) * 255.0 / 2.0);
+                                depthEdgesCV.Data[x, y, 2] = (float)((depthImgOutCV.Data[x, y, 1] / pixelMag[i] + 1) * 255.0 / 2.0);
                             }
-                        }
+
+                        });
+
+                        //Run canny detection to obtain image edges.
+                        if (useCustom)
+                            grayTempCV = depthEdgesCV.Convert<Gray, Byte>().Dilate(1);
                         else
+                            grayTempCV = depthEdgesCV.Convert<Gray, Byte>().Canny(depthCannyThresh, depthCannyThreshLinking).Dilate(1);
+
+                        myPoly = polyDetectDepth(grayTempCV);
+
+                        planetracker.UpdatePlanes(polyDetectDepthAdj(grayTempCV));
+
+                        // create the overlay using the planes in plane tracker
+                        foreach (Plane plane in planetracker.GetPlanes())
                         {
+                            createOverlay(plane.GetPoints(), overlayImageArray[plane.GetOverlayImageIndex() % 2]);
+                        }
+                    }
+
+                    // display the normals
+                    if (displayNormals || !useEdgeDetect)
+                    {
+                        Parallel.For(0, depthImgOutCV.Cols * depthImgOutCV.Rows, i =>
+                        {
+                            int x = i / sensorChooser.Kinect.DepthStream.FrameWidth;
+                            int y = i % sensorChooser.Kinect.DepthStream.FrameWidth;
+
                             depthImgOutCV.Data[x, y, 0] = (float)((depthImgOutCV.Data[x, y, 0] / pixelMag[i] + 1) * 255.0 / 2.0);
-                            depthImgOutCV.Data[x, y, 1] = (float)((depthImgOutCV.Data[x, y, 2] / pixelMag[i] + 1) * 255.0 / 2.0);
-                            depthImgOutCV.Data[x, y, 2] = (float)((depthImgOutCV.Data[x, y, 1] / pixelMag[i] + 1) * 255.0 / 2.0);
+                            depthImgOutCV.Data[x, y, 1] = (float)((depthImgOutCV.Data[x, y, 1] / pixelMag[i] + 1) * 255.0 / 2.0);
+                            depthImgOutCV.Data[x, y, 2] = (float)((depthImgOutCV.Data[x, y, 2] / pixelMag[i] + 1) * 255.0 / 2.0);
+                        });
+
+                        if (myPoly != null)
+                        {
+                            foreach (System.Drawing.Point[] polyLine in myPoly)
+                                depthImgOutCV.DrawPolyline(polyLine, true, new Bgr(System.Drawing.Color.Cyan), 2);
                         }
 
-                    });
+                        // save the points to the output buffer
+                        Parallel.For(0, depthImgOutCV.Cols * depthImgOutCV.Rows, i =>
+                        {
+                            int x = i / sensorChooser.Kinect.DepthStream.FrameWidth;
+                            int y = i % sensorChooser.Kinect.DepthStream.FrameWidth;
 
-                    //Run canny detection to obtain image edges.
-                    Image<Gray, Byte> grayTempCV;
+                            // Write out blue byte
+                            this.depthRGBPixels[i * 4] = (byte)(short)depthImgOutCV.Data[x, y, 0];
 
-                    if (useCustom)
-                        grayTempCV = depthImgOutCV.Convert<Gray, Byte>();
+                            // Write out green byte
+                            this.depthRGBPixels[i * 4 + 1] = (byte)(short)depthImgOutCV.Data[x, y, 1];
+
+                            // Write out red byte
+                            this.depthRGBPixels[i * 4 + 2] = (byte)(short)depthImgOutCV.Data[x, y, 2];
+                        });
+                    }
                     else
-                        grayTempCV = depthImgOutCV.Convert<Gray, Byte>().Canny(170, 75).Dilate(1);
-
-                    List<System.Drawing.Point[]> myPoly = polyDetect(grayTempCV);
-
-                    if (myPoly != null)
                     {
-                        foreach (System.Drawing.Point[] polyLine in myPoly)
-                            depthImgOutCV.DrawPolyline(polyLine, true, new Bgr(System.Drawing.Color.Red), 2);
+                        Image<Bgr, Single> outImgCV = grayTempCV.Convert<Bgr, Single>();
+
+                        if (myPoly != null)
+                        {
+                            foreach (System.Drawing.Point[] polyLine in myPoly)
+                                outImgCV.DrawPolyline(polyLine, true, new Bgr(System.Drawing.Color.Cyan), 2);
+                        }
+
+                        // save the points to the output buffer
+                        Parallel.For(0, depthImgCV.Cols * depthImgCV.Rows, i =>
+                        {
+                            int x = i / sensorChooser.Kinect.DepthStream.FrameWidth;
+                            int y = i % sensorChooser.Kinect.DepthStream.FrameWidth;
+
+                            // Write out blue byte
+                            this.depthRGBPixels[i * 4] = (byte)(short)outImgCV.Data[x, y, 0];
+
+                            // Write out green byte
+                            this.depthRGBPixels[i * 4 + 1] = (byte)(short)outImgCV.Data[x, y, 1];
+
+                            // Write out red byte
+                            this.depthRGBPixels[i * 4 + 2] = (byte)(short)outImgCV.Data[x, y, 2];
+                        });
                     }
-
-                    // save the points to the output buffer
-                    Parallel.For(0, depthImgCV.Cols * depthImgCV.Rows, i =>
-                    {
-                        int x = i / sensorChooser.Kinect.DepthStream.FrameWidth;
-                        int y = i % sensorChooser.Kinect.DepthStream.FrameWidth;
-
-                        // Write out blue byte
-                        this.depthRGBPixels[i * 4] = (byte)(short)grayTempCV.Data[x, y, 0];
-
-                        // Write out green byte
-                        this.depthRGBPixels[i * 4 + 1] = (byte)(short)grayTempCV.Data[x, y, 0];
-
-                        // Write out red byte
-                        this.depthRGBPixels[i * 4 + 2] = (byte)(short)grayTempCV.Data[x, y, 0];
-                    });
-                }
-                else
-                {
-                    Parallel.For(0, depthImgOutCV.Cols * depthImgOutCV.Rows, i =>
-                    {
-                        int x = i / sensorChooser.Kinect.DepthStream.FrameWidth;
-                        int y = i % sensorChooser.Kinect.DepthStream.FrameWidth;
-
-                        depthImgOutCV.Data[x, y, 0] = (float)((depthImgOutCV.Data[x, y, 0] / pixelMag[i] + 1) * 255.0 / 2.0);
-                        depthImgOutCV.Data[x, y, 1] = (float)((depthImgOutCV.Data[x, y, 1] / pixelMag[i] + 1) * 255.0 / 2.0);
-                        depthImgOutCV.Data[x, y, 2] = (float)((depthImgOutCV.Data[x, y, 2] / pixelMag[i] + 1) * 255.0 / 2.0);
-                    });
-
-                    Image<Gray, Byte> grayImage = depthImgOutCV.Convert<Gray, Byte>();
-
-                    grayImage._SmoothGaussian(3, 3, 2, 2);
-
-                    grayImage = grayImage.Canny(150, 15);
-
-                    List<System.Drawing.Point[]> myPoly = polyDetect(grayImage);
-
-                    if (myPoly != null)
-                    {
-                        foreach (System.Drawing.Point[] polyLine in myPoly)
-                            depthImgOutCV.DrawPolyline(polyLine, true, new Bgr(System.Drawing.Color.Red), 10);
-                    }
-
-                    // save the points to the output buffer
-                    Parallel.For(0, depthImgOutCV.Cols * depthImgOutCV.Rows, i =>
-                    {
-                        int x = i / sensorChooser.Kinect.DepthStream.FrameWidth;
-                        int y = i % sensorChooser.Kinect.DepthStream.FrameWidth;
-
-                        // Write out blue byte
-                        this.depthRGBPixels[i * 4] = (byte)(short)depthImgOutCV.Data[x, y, 0];
-
-                        // Write out green byte
-                        this.depthRGBPixels[i * 4 + 1] = (byte)(short)depthImgOutCV.Data[x, y, 1];
-
-                        // Write out red byte
-                        this.depthRGBPixels[i * 4 + 2] = (byte)(short)depthImgOutCV.Data[x, y, 2];
-                    });
                 }
 
                 // Write the pixel data into our bitmap
@@ -896,7 +913,132 @@ namespace CS682Project
 
                         System.Diagnostics.Debug.WriteLine(pts[0] + " " + pts[1] + " " + pts[2] + " " + pts[3]);
 
-                        if (!isSelfIntersecting(pts)) {
+                        bool skip = false;
+
+                        for (int i = 0; i < pts.Length; i++)
+                            if (pts[i].X < 0 || pts[i].X > 640 || pts[i].Y < 0 || pts[i].Y > 480)
+                                skip = true;
+
+                        if (!isSelfIntersecting(pts) && !skip)
+                        {
+                            mypts.Add(pts);
+                        }
+                    }
+                }
+
+            // *************
+            // SNS - 04-14
+            // *************
+            snsPts = OrderPoints(mypts);
+            return snsPts;
+
+            //return mypts;
+            // *************
+            // SNS - 04-14
+            // *************
+        }
+
+        public List<System.Drawing.Point[]> polyDetectDepth(Image<Gray, Byte> myImage)
+        {
+
+            List<System.Drawing.Point[]> mypts = new List<System.Drawing.Point[]>();
+
+            // *************
+            // SNS - 04-14
+            // *************
+            List<System.Drawing.Point[]> snsPts = new List<System.Drawing.Point[]>();
+            // *************
+            // SNS - 04-14
+            // *************
+
+            using (MemStorage storage = new MemStorage())
+
+                for (Contour<System.Drawing.Point> contours = myImage.FindContours(CHAIN_APPROX_METHOD.CV_CHAIN_APPROX_SIMPLE, RETR_TYPE.CV_RETR_LIST); contours != null; contours = contours.HNext)
+                {
+                    Contour<System.Drawing.Point> currentContour = contours.ApproxPoly(contours.Perimeter * 0.1, storage);
+
+                    //Check to see if the contour forms a enclosed quadralateral with a desired minimum area.
+                    if (Math.Abs(currentContour.Area) > 500 && currentContour.Convex == true && currentContour.Total == 4)//
+                    {
+                        System.Diagnostics.Debug.WriteLine("current contour area " + currentContour.Area);
+
+                        System.Drawing.Point[] pts = currentContour.ToArray();
+
+                        System.Diagnostics.Debug.WriteLine(pts[0] + " " + pts[1] + " " + pts[2] + " " + pts[3]);
+
+                        bool skip = false;
+
+                        for (int i = 0; i < pts.Length; i++)
+                            if (pts[i].X < 0 || pts[i].X > 640 || pts[i].Y < 0 || pts[i].Y > 480)
+                                skip = true;
+
+                        if (!isSelfIntersecting(pts) && !skip)
+                        {
+                            mypts.Add(pts);
+                        }
+                    }
+                }
+
+            // *************
+            // SNS - 04-14
+            // *************
+            snsPts = OrderPoints(mypts);
+            return snsPts;
+
+            //return mypts;
+            // *************
+            // SNS - 04-14
+            // *************
+        }
+
+        public List<System.Drawing.Point[]> polyDetectDepthAdj(Image<Gray, Byte> myImage)
+        {
+
+            List<System.Drawing.Point[]> mypts = new List<System.Drawing.Point[]>();
+
+            // *************
+            // SNS - 04-14
+            // *************
+            List<System.Drawing.Point[]> snsPts = new List<System.Drawing.Point[]>();
+            // *************
+            // SNS - 04-14
+            // *************
+
+            using (MemStorage storage = new MemStorage())
+
+                for (Contour<System.Drawing.Point> contours = myImage.FindContours(CHAIN_APPROX_METHOD.CV_CHAIN_APPROX_SIMPLE, RETR_TYPE.CV_RETR_LIST); contours != null; contours = contours.HNext)
+                {
+                    Contour<System.Drawing.Point> currentContour = contours.ApproxPoly(contours.Perimeter * 0.1, storage);
+
+                    //Check to see if the contour forms a enclosed quadralateral with a desired minimum area.
+                    if (Math.Abs(currentContour.Area) > 500 && currentContour.Convex == true && currentContour.Total == 4)//
+                    {
+                        System.Diagnostics.Debug.WriteLine("current contour area " + currentContour.Area);
+
+                        System.Drawing.Point[] pts = currentContour.ToArray();
+
+                        bool skip = false;
+
+                        for (int i = 0; i < pts.Length; i++)
+                        {
+                            DepthImagePoint dip = new DepthImagePoint();
+                            dip.X = pts[i].X;
+                            dip.Y = pts[i].Y;
+                            dip.Depth = depthPixels[pts[i].Y * 640 + pts[i].X].Depth;
+                            ColorImagePoint cip = sensorChooser.Kinect.CoordinateMapper.MapDepthPointToColorPoint(sensorChooser.Kinect.DepthStream.Format,
+                                                                                                                  dip,
+                                                                                                                  sensorChooser.Kinect.ColorStream.Format);
+                            pts[i].X = cip.X;
+                            pts[i].Y = cip.Y;
+
+                            if (pts[i].X < 0 || pts[i].X > 640 || pts[i].Y < 0 || pts[i].Y > 480)
+                                skip = true;
+                        }
+
+                        System.Diagnostics.Debug.WriteLine(pts[0] + " " + pts[1] + " " + pts[2] + " " + pts[3]);
+
+                        if (!isSelfIntersecting(pts) && !skip)
+                        {
                             mypts.Add(pts);
                         }
                     }
