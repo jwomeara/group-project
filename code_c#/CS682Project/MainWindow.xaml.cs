@@ -110,19 +110,18 @@ namespace CS682Project
         static PlaneTracker planetracker = null;
 
         // read in an overlay image
-        private const int MAX_IMAGES = 5;
+        private const int MAX_IMAGES = 10;
 
-        Image<Bgr, Byte>[] overlayImageArray = new Image<Bgr, Byte>[2];
+        String[] imagePaths = {@"C:\Users\wayne\Desktop\ComputerVision\plane1.jpg", 
+                              @"C:\Users\wayne\Desktop\ComputerVision\plane2.jpg",
+                              @"C:\Users\wayne\Desktop\ComputerVision\plane3.jpg",
+                            @"C:\Users\wayne\Desktop\ComputerVision\plane4.jpg",
+                            @"C:\Users\wayne\Desktop\ComputerVision\plane5.jpg"};
 
-        static Image<Bgr, Byte> overlayImage = new Image<Bgr, Byte>(@"C:\Users\wayne\Desktop\ComputerVision\Shapes.jpg");
-        static Image<Bgr, Byte> overlayImage2 = new Image<Bgr, Byte>(@"C:\Users\wayne\Desktop\ComputerVision\Shapes1.jpg");
+        Image<Bgr, Byte>[] overlayImageArray = new Image<Bgr, Byte>[5];
 
         // make the overlay's "poly" which is just the corners of the image
-        System.Drawing.PointF[] overlayPoly =
-                    { new System.Drawing.Point(0, 0),
-                      new System.Drawing.Point(overlayImage.Size.Width, 0),
-                      new System.Drawing.Point(overlayImage.Size.Width, overlayImage.Size.Height),
-                      new System.Drawing.Point(0, overlayImage.Size.Height) };
+        System.Drawing.PointF[] overlayPoly = new System.Drawing.PointF[4];
 
         // *************
         // SNS - 04-14
@@ -186,8 +185,15 @@ namespace CS682Project
             pixelState = new int[sensorChooser.Kinect.DepthStream.FrameWidth * sensorChooser.Kinect.DepthStream.FrameHeight];
             
             // initialize array of overlay images
-            overlayImageArray[0] = overlayImage;
-            overlayImageArray[1] = overlayImage2;
+            for (int i = 0; i < imagePaths.Length; i++)
+            {
+                overlayImageArray[i] = new Image<Bgr, Byte>(imagePaths[i]);
+            }
+
+            overlayPoly[0] = new System.Drawing.Point(0, 0);
+            overlayPoly[1] = new System.Drawing.Point(overlayImageArray[0].Size.Width, 0);
+            overlayPoly[2] = new System.Drawing.Point(overlayImageArray[0].Size.Width, overlayImageArray[0].Size.Height);
+            overlayPoly[3] = new System.Drawing.Point(0, overlayImageArray[0].Size.Height);
 
             // initialize PlaneTracker object and list of planes to track
             List<Plane> planeList = new List<Plane>();
@@ -328,7 +334,7 @@ namespace CS682Project
             // create the overlay using the planes in plane tracker
             foreach (Plane plane in planetracker.GetPlanes())
             {
-                createOverlay(plane.GetPoints(), overlayImageArray[plane.GetOverlayImageIndex() % 2]);
+                createOverlay(plane.GetPoints(), overlayImageArray[plane.GetOverlayImageIndex() % 5]);
             }
                            
             //Once we are finished with the gray temp image it needs to be disposed of.

@@ -38,7 +38,7 @@ namespace CS682Project
         public void UpdatePlanes(List<System.Drawing.Point[]> polys) {
 
             List<Plane> trackedPlanes = new List<Plane>();
-            int deathCount = 10;
+            int deathCount = 5;
 
             // check if the plane has reached its time limit of not having a matching polygon over n frames. if so, remove.
             foreach (Plane plane in this.planes)
